@@ -78,14 +78,40 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
+/* Bump this (and the matching version.json) on every deploy so open tabs get
+   prompted to reload instead of running stale code silently. */
+const APP_VERSION = "2026-08-14.2";
+function useVersionCheck() {
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await fetch("version.json?_=" + Date.now(), { cache: "no-store" });
+        const data = await res.json();
+        if (data.version && data.version !== APP_VERSION) setUpdateAvailable(true);
+      } catch (e) {}
+    };
+    check();
+    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVis);
+    const interval = setInterval(check, 45000);
+    return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(interval); };
+  }, []);
+  return updateAvailable;
+}
+
 /* ---------- Firebase Realtime Database (REST, no SDK) ---------- */
 const DB_URL = "https://scs-toilet-truck-default-rtdb.asia-southeast1.firebasedatabase.app";
 
 /* Paste your Firebase project's Web API Key here (Firebase console → Project settings
    → General → "Web API Key") — same key used in the Ledger. */
 const FIREBASE_API_KEY = "AIzaSyDuYrFItf05RW9GhsM2vpxni18boAU0QzY";
-/* Only this email can sign in to the console / approve operators. Set it to your own
-   Firebase Auth email (create the account via the Ledger's Sign Up tab first). */
+/* Only accounts on this email domain can sign in to the console at all. */
+const ALLOWED_DOMAIN = "@alstomgroup.com";
+/* Your own admin account — used only to bootstrap the very first admin (see
+   fetchOperatorProfile / isAdmin below). Once you've flagged yourself as admin
+   in the database, you can promote others from the Admin tab and this constant
+   stops mattering. */
 const ADMIN_EMAIL = "michael.roberton@alstomgroup.com";
 
 const AUTH_SIGNIN_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
@@ -117,6 +143,7 @@ async function fbDelete(path, id) {
   const res = await fetch(`${DB_URL}/${path}/${id}.json${authQ}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Firebase delete failed: " + res.status);
 }
+async function fetchOperatorProfile(uid) { return fbGetRaw(`operators/${uid}`); }
 
 /* ---------- Auth REST calls (login only — accounts are created via the Ledger) ---------- */
 async function authSignIn(email, password) {
@@ -472,7 +499,7 @@ function ConsoleLoginPage({ onAuthed }) {
   );
 }
 
-function AdminPanel({ showToast }) {
+function AdminPanel({ showToast, currentUid }) {
   const [operators, setOperators] = useState(null);
   const [bugReports, setBugReports] = useState(null);
   const [health, setHealth] = useState(null);
@@ -494,6 +521,10 @@ function AdminPanel({ showToast }) {
 
   const setOperatorStatus = async (op, status) => {
     try { await fbSet("operators", op.uid, { ...op, status }); showToast(status === "approved" ? `${op.name} approved` : `${op.name} rejected`); loadOperators(); }
+    catch (e) { showToast("Update failed — check connection"); }
+  };
+  const setOperatorAdmin = async (op, isAdmin) => {
+    try { await fbSet("operators", op.uid, { ...op, isAdmin }); showToast(isAdmin ? `${op.name} is now an admin` : `${op.name}'s admin rights removed`); loadOperators(); }
     catch (e) { showToast("Update failed — check connection"); }
   };
   const resolveBug = async (bug) => {
@@ -550,9 +581,19 @@ function AdminPanel({ showToast }) {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {approved.map((op) => (
-              <div key={op.uid} style={{ ...styles.snapshotCard, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span><Icon path={ICONS.user} size={13} style={{ marginRight: 8 }} />{op.name} <span style={{ color: "var(--muted)", fontSize: 11.5 }}>({op.email})</span></span>
-                <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Revoke</button>
+              <div key={op.uid} style={{ ...styles.snapshotCard, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <span>
+                  <Icon path={ICONS.user} size={13} style={{ marginRight: 8 }} />{op.name} <span style={{ color: "var(--muted)", fontSize: 11.5 }}>({op.email})</span>
+                  {op.isAdmin && <span style={{ ...styles.chip, marginLeft: 8 }}>Admin</span>}
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {op.uid !== currentUid && (
+                    op.isAdmin
+                      ? <button style={styles.rejectBtn} onClick={() => setOperatorAdmin(op, false)}>Remove admin</button>
+                      : <button style={styles.approveBtn} onClick={() => setOperatorAdmin(op, true)}>Make admin</button>
+                  )}
+                  <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Revoke</button>
+                </div>
               </div>
             ))}
           </div>
@@ -598,8 +639,10 @@ function AdminPanel({ showToast }) {
 }
 
 function App() {
+  const updateAvailable = useVersionCheck();
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [profile, setProfile] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [trucks] = useState(DEFAULT_TRUCKS);
   const [fleet] = useState(DEFAULT_FLEET);
@@ -647,7 +690,23 @@ function App() {
     return () => clearInterval(interval);
   }, [session]);
 
-  const handleSignOut = () => { clearSession(); setCurrentIdToken(null); setSession(null); };
+  // Load (and, while pending, poll for) this account's operator profile —
+  // determines approval status and whether the Admin tab is visible.
+  useEffect(() => {
+    if (!session || !session.email.toLowerCase().endsWith(ALLOWED_DOMAIN)) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const p = await fetchOperatorProfile(session.uid);
+        if (!cancelled) setProfile(p || { status: "pending" });
+      } catch (e) {}
+    };
+    load();
+    const poll = setInterval(() => { if (!profile || profile.status !== "approved") load(); }, 15000);
+    return () => { cancelled = true; clearInterval(poll); };
+  }, [session]);
+
+  const handleSignOut = () => { clearSession(); setCurrentIdToken(null); setSession(null); setProfile(null); };
 
   const refresh = useCallback(async (silent) => {
     if (!silent) setLoading(true);
@@ -811,7 +870,7 @@ function App() {
 
   if (!authChecked) return <div style={styles.app} />;
   if (!session) return <ConsoleLoginPage onAuthed={setSession} />;
-  if (session.email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+  if (!session.email.toLowerCase().endsWith(ALLOWED_DOMAIN)) {
     return (
       <div style={styles.loginWrap}>
         <div className="rise" style={styles.loginCard}>
@@ -819,12 +878,33 @@ function App() {
             <div style={styles.logoMark}><Icon path={ICONS.gauge} size={24} color="#0E1A16" /></div>
             <div><div style={styles.title}>SOUTHERN CROSS STATION</div><div style={styles.subtitle}>Not Authorised</div></div>
           </div>
-          <p style={styles.statusMsg}>This console is restricted to the admin account. Signed in as {session.email}.</p>
+          <p style={styles.statusMsg}>This console is restricted to {ALLOWED_DOMAIN} accounts. Signed in as {session.email}.</p>
           <button style={styles.submitBtn} onClick={handleSignOut}>Sign out</button>
         </div>
       </div>
     );
   }
+  if (!profile) return <div style={styles.app} />;
+  if (profile.status !== "approved") {
+    return (
+      <div style={styles.loginWrap}>
+        <div className="rise" style={styles.loginCard}>
+          <div style={styles.loginLogoRow}>
+            <div style={styles.logoMark}><Icon path={ICONS.gauge} size={24} color="#0E1A16" /></div>
+            <div><div style={styles.title}>SOUTHERN CROSS STATION</div><div style={styles.subtitle}>{profile.status === "rejected" ? "Access Not Approved" : "Awaiting Approval"}</div></div>
+          </div>
+          <p style={styles.statusMsg}>
+            {profile.status === "rejected"
+              ? "Your account request wasn't approved. Speak to your supervisor if you think this is wrong."
+              : "Your account is waiting on an admin to approve it. This checks automatically — no need to log in again."}
+          </p>
+          <button style={styles.submitBtn} onClick={handleSignOut}>Sign out</button>
+        </div>
+      </div>
+    );
+  }
+
+  const isAdmin = profile.isAdmin === true;
 
   return (
     <div style={styles.app}>
@@ -861,7 +941,7 @@ function App() {
           { id: "dashboard", label: "Dashboard", icon: ICONS.chart },
           { id: "status", label: "Fleet", icon: ICONS.gauge },
           { id: "log", label: "Log service", icon: ICONS.gauge },
-          { id: "admin", label: "Admin", icon: ICONS.shield },
+          ...(isAdmin ? [{ id: "admin", label: "Admin", icon: ICONS.shield }] : []),
           { id: "history", label: "History", icon: ICONS.list },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{ ...styles.tabBtn, ...(tab === t.id ? styles.tabBtnActive : {}) }}>{t.label}</button>
@@ -872,11 +952,17 @@ function App() {
         {tab === "dashboard" && <Dashboard trucks={trucks} logs={logs} inspections={inspections} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
-        {tab === "admin" && <AdminPanel showToast={showToast} />}
+        {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
         {tab === "history" && <History logs={logs} inspections={inspections} onDeleteLog={deleteLog} onDeleteInspection={deleteInspection} onEditLog={startEditLog} onExport={exportExcel} onClearAll={clearAllData} trucks={trucks} />}
       </main>
 
       {toast && <div style={styles.toast}>{toast}</div>}
+      {updateAvailable && (
+        <div style={styles.updateBanner}>
+          <span><Icon path={ICONS.refresh} size={14} style={{ marginRight: 8 }} />A new version is available</span>
+          <button style={styles.updateReloadBtn} onClick={() => window.location.reload()}>Reload</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1403,6 +1489,8 @@ const styles = {
   cancelEditBtn: { background: "none", border: "1px solid var(--amber-dim)", borderRadius: 7, color: "var(--amber-light)", fontSize: 11.5, fontWeight: 700, padding: "4px 9px", cursor: "pointer" },
   dangerBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", background: "none", border: "1px solid rgba(229,72,77,0.35)", borderRadius: 9, padding: "10px 14px", color: "var(--danger)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", marginTop: 22 },
   toast: { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "linear-gradient(155deg, var(--amber-light), var(--amber))", color: "#0E1A16", padding: "10px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700, boxShadow: "0 10px 28px rgba(0,0,0,.4)" },
+  updateBanner: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", gap: 14, background: "var(--panel-2)", borderTop: "1px solid var(--amber-dim)", padding: "12px 16px", fontSize: 12.5, color: "var(--chalk)", fontWeight: 600 },
+  updateReloadBtn: { background: "var(--amber)", border: "none", borderRadius: 8, padding: "6px 14px", color: "#0E1A16", fontSize: 12, fontWeight: 700, cursor: "pointer" },
   statRow: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 },
   statCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 16, padding: "22px 16px", textAlign: "center", boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
   statValue: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 32, fontWeight: 700, color: "var(--chalk)" },
