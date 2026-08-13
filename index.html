@@ -80,19 +80,82 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* ---------- Firebase Realtime Database (REST, no SDK) ---------- */
 const DB_URL = "https://scs-toilet-truck-default-rtdb.asia-southeast1.firebasedatabase.app";
+
+/* Paste your Firebase project's Web API Key here (Firebase console → Project settings
+   → General → "Web API Key") — same key used in the Ledger. */
+const FIREBASE_API_KEY = "AIzaSyDuYrFItf05RW9GhsM2vpxni18boAU0QzY";
+/* Only this email can sign in to the console / approve operators. Set it to your own
+   Firebase Auth email (create the account via the Ledger's Sign Up tab first). */
+const ADMIN_EMAIL = "michael.roberton@alstomgroup.com";
+
+const AUTH_SIGNIN_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
+const AUTH_REFRESH_URL = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+
+let CURRENT_ID_TOKEN = null;
+function setCurrentIdToken(token) { CURRENT_ID_TOKEN = token; }
+
 async function fbGetAll(path) {
-  const res = await fetch(`${DB_URL}/${path}.json`);
+  const authQ = CURRENT_ID_TOKEN ? `?auth=${CURRENT_ID_TOKEN}` : "";
+  const res = await fetch(`${DB_URL}/${path}.json${authQ}`);
   if (!res.ok) throw new Error("Firebase read failed: " + res.status);
   const data = await res.json();
   return data ? Object.values(data) : [];
 }
+async function fbGetRaw(path) {
+  const authQ = CURRENT_ID_TOKEN ? `?auth=${CURRENT_ID_TOKEN}` : "";
+  const res = await fetch(`${DB_URL}/${path}.json${authQ}`);
+  if (!res.ok) throw new Error("Firebase read failed: " + res.status);
+  return res.json();
+}
 async function fbSet(path, id, value) {
-  const res = await fetch(`${DB_URL}/${path}/${id}.json`, { method: "PUT", body: JSON.stringify(value) });
+  const authQ = CURRENT_ID_TOKEN ? `?auth=${CURRENT_ID_TOKEN}` : "";
+  const res = await fetch(`${DB_URL}/${path}/${id}.json${authQ}`, { method: "PUT", body: JSON.stringify(value) });
   if (!res.ok) throw new Error("Firebase write failed: " + res.status);
 }
 async function fbDelete(path, id) {
-  const res = await fetch(`${DB_URL}/${path}/${id}.json`, { method: "DELETE" });
+  const authQ = CURRENT_ID_TOKEN ? `?auth=${CURRENT_ID_TOKEN}` : "";
+  const res = await fetch(`${DB_URL}/${path}/${id}.json${authQ}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Firebase delete failed: " + res.status);
+}
+
+/* ---------- Auth REST calls (login only — accounts are created via the Ledger) ---------- */
+async function authSignIn(email, password) {
+  const res = await fetch(AUTH_SIGNIN_URL, { method: "POST", body: JSON.stringify({ email, password, returnSecureToken: true }) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "Log in failed");
+  return data;
+}
+async function authRefresh(refreshToken) {
+  const res = await fetch(AUTH_REFRESH_URL, {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "Session refresh failed");
+  return { idToken: data.id_token, refreshToken: data.refresh_token, localId: data.user_id };
+}
+function authErrorMessage(err) {
+  const code = err.message || "";
+  if (code.includes("EMAIL_NOT_FOUND") || code.includes("INVALID_PASSWORD") || code.includes("INVALID_LOGIN_CREDENTIALS")) return "Incorrect email or password.";
+  if (code.includes("INVALID_EMAIL")) return "That doesn't look like a valid email address.";
+  if (code.includes("PASTE_YOUR_WEB_API_KEY")) return "Console isn't configured yet — missing Firebase Web API Key.";
+  return "Something went wrong. Please try again.";
+}
+
+const SESSION_KEY = "suo-console:session";
+function saveSession(session, remember) {
+  try {
+    const store = remember ? localStorage : sessionStorage;
+    store.setItem(SESSION_KEY, JSON.stringify(session));
+    (remember ? sessionStorage : localStorage).removeItem(SESSION_KEY);
+  } catch (e) {}
+}
+function loadSession() {
+  try { const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY); return raw ? JSON.parse(raw) : null; }
+  catch (e) { return null; }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
 }
 
 const POLL_MS = 12000;
@@ -248,6 +311,15 @@ const ICONS = {
   edit: "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z",
   trash: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16z",
   refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
+  mail: "M4 4h16v16H4z M22 6l-10 7L2 6",
+  lock: "M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2z M7 11V7a5 5 0 0 1 10 0v4",
+  eye: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+  eyeOff: "M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24 M1 1l22 22",
+  logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",
+  bug: "M8 2l1.88 1.88 M14.12 3.88 16 2 M9 7.13v-1a3.003 3.003 0 1 1 6 0v1 M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z M12 20v-9 M6.53 9C4.6 9.5 3 11.1 3 13 M17.47 9c1.93.5 3.53 2.1 3.53 4 M3 17c1.5-1 3-1 3-1 M18 16s1.5 0 3 1",
+  pulse: "M22 12h-4l-3 9L9 3l-3 9H2",
+  user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
 };
 
 /* ---------- Charts ---------- */
@@ -339,7 +411,195 @@ function DonutStat({ a, b, labelA, labelB, colorA = "var(--amber)", colorB = "va
 }
 
 /* ---------- App ---------- */
+function ConsoleLoginPage({ onAuthed }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (!email || !password) { setError("Enter your email and password."); return; }
+    setBusy(true);
+    try {
+      const auth = await authSignIn(email, password);
+      setCurrentIdToken(auth.idToken);
+      const session = { uid: auth.localId, idToken: auth.idToken, refreshToken: auth.refreshToken, email };
+      saveSession(session, rememberMe);
+      onAuthed(session);
+    } catch (err) { setError(authErrorMessage(err)); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={styles.loginWrap}>
+      <div className="rise" style={styles.loginCard}>
+        <div style={styles.loginLogoRow}>
+          <div style={styles.logoMark}><Icon path={ICONS.gauge} size={24} color="#0E1A16" /></div>
+          <div>
+            <div style={styles.title}>SOUTHERN CROSS STATION</div>
+            <div style={styles.subtitle}>SUO Dashboard — Admin Login</div>
+          </div>
+        </div>
+        <form onSubmit={submit}>
+          <Field label="Email">
+            <div style={styles.inputWithIcon}>
+              <Icon path={ICONS.mail} size={15} color="var(--muted)" style={styles.inputIcon} />
+              <input style={styles.inputIndented} type="email" autoCapitalize="none" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+            </div>
+          </Field>
+          <Field label="Password">
+            <div style={styles.inputWithIcon}>
+              <Icon path={ICONS.lock} size={15} color="var(--muted)" style={styles.inputIcon} />
+              <input style={{ ...styles.inputIndented, paddingRight: 40 }} type={showPassword ? "text" : "password"} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <button type="button" style={styles.eyeToggle} onClick={() => setShowPassword((s) => !s)} aria-label="Show password">
+                <Icon path={showPassword ? ICONS.eyeOff : ICONS.eye} size={16} color="var(--muted)" />
+              </button>
+            </div>
+          </Field>
+          <div style={styles.rememberRow} onClick={() => setRememberMe((r) => !r)}>
+            <div style={{ ...styles.checkbox, ...(rememberMe ? styles.checkboxOn : {}) }}>{rememberMe && <Icon path={ICONS.check} size={13} color="#0E1A16" />}</div>
+            <span style={styles.toggleLabel}>Remember me</span>
+          </div>
+          {error && <div style={styles.loginError}><Icon path={ICONS.alert} size={13} style={{ marginRight: 6, flexShrink: 0 }} />{error}</div>}
+          <button type="submit" disabled={busy} style={{ ...styles.submitBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Please wait…" : "Log In"}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AdminPanel({ showToast }) {
+  const [operators, setOperators] = useState(null);
+  const [bugReports, setBugReports] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [healthRunning, setHealthRunning] = useState(false);
+
+  const loadOperators = async () => {
+    try {
+      const raw = await fbGetRaw("operators");
+      setOperators(raw ? Object.entries(raw).map(([uid, v]) => ({ uid, ...v })) : []);
+    } catch (e) { showToast("Couldn't load operators"); }
+  };
+  const loadBugs = async () => {
+    try {
+      const raw = await fbGetRaw("bugReports");
+      setBugReports(raw ? Object.entries(raw).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)) : []);
+    } catch (e) { showToast("Couldn't load bug reports"); }
+  };
+  useEffect(() => { loadOperators(); loadBugs(); }, []);
+
+  const setOperatorStatus = async (op, status) => {
+    try { await fbSet("operators", op.uid, { ...op, status }); showToast(status === "approved" ? `${op.name} approved` : `${op.name} rejected`); loadOperators(); }
+    catch (e) { showToast("Update failed — check connection"); }
+  };
+  const resolveBug = async (bug) => {
+    try { await fbSet("bugReports", bug.id, { ...bug, resolved: true }); loadBugs(); }
+    catch (e) { showToast("Update failed — check connection"); }
+  };
+
+  const runHealthCheck = async () => {
+    setHealthRunning(true);
+    const checks = [];
+    const t0 = performance.now();
+    try { await fbGetRaw("services"); checks.push({ name: "Database read", ok: true, detail: `${Math.round(performance.now() - t0)}ms` }); }
+    catch (e) { checks.push({ name: "Database read", ok: false, detail: "Failed" }); }
+    const t1 = performance.now();
+    try { await fbSet("healthcheck", "ping", { at: Date.now() }); checks.push({ name: "Database write", ok: true, detail: `${Math.round(performance.now() - t1)}ms` }); }
+    catch (e) { checks.push({ name: "Database write", ok: false, detail: "Failed" }); }
+    checks.push({ name: "Auth session", ok: !!CURRENT_ID_TOKEN, detail: CURRENT_ID_TOKEN ? "Token present" : "Missing" });
+    checks.push({ name: "Browser online", ok: navigator.onLine, detail: navigator.onLine ? "Connected" : "Offline" });
+    checks.push({ name: "API key configured", ok: FIREBASE_API_KEY !== "PASTE_YOUR_WEB_API_KEY_HERE", detail: FIREBASE_API_KEY !== "PASTE_YOUR_WEB_API_KEY_HERE" ? "Set" : "Missing" });
+    setHealth(checks);
+    setHealthRunning(false);
+  };
+
+  const pending = (operators || []).filter((o) => o.status === "pending");
+  const approved = (operators || []).filter((o) => o.status === "approved");
+  const openBugs = (bugReports || []).filter((b) => !b.resolved);
+
+  return (
+    <div>
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Pending Approvals{pending.length > 0 ? ` (${pending.length})` : ""}</div>
+        {operators === null ? <div style={styles.emptyState}>Loading…</div> : pending.length === 0 ? (
+          <div style={styles.allClear}><Icon path={ICONS.check} size={16} color="var(--ok)" style={{ marginRight: 8 }} />No pending requests</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {pending.map((op) => (
+              <div key={op.uid} style={styles.snapshotCard}>
+                <div style={styles.snapshotTop}><span style={styles.snapshotTruck}><Icon path={ICONS.user} size={14} style={{ marginRight: 6 }} />{op.name}</span></div>
+                <div style={styles.snapshotMeta}>{op.email}</div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button style={styles.approveBtn} onClick={() => setOperatorStatus(op, "approved")}>Approve</button>
+                  <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Approved Operators{approved.length > 0 ? ` (${approved.length})` : ""}</div>
+        {operators === null ? <div style={styles.emptyState}>Loading…</div> : approved.length === 0 ? (
+          <div style={styles.emptyState}>No approved operators yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {approved.map((op) => (
+              <div key={op.uid} style={{ ...styles.snapshotCard, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span><Icon path={ICONS.user} size={13} style={{ marginRight: 8 }} />{op.name} <span style={{ color: "var(--muted)", fontSize: 11.5 }}>({op.email})</span></span>
+                <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Revoke</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div style={styles.panelTitleRow}>
+          <div className="panel-title" style={{ ...styles.panelTitle, marginBottom: 0 }}>System Health Check</div>
+          <button style={styles.exportBtn} onClick={runHealthCheck} disabled={healthRunning}><Icon path={ICONS.pulse} size={13} style={{ marginRight: 6 }} />{healthRunning ? "Running…" : "Run check"}</button>
+        </div>
+        {health && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
+            {health.map((c) => (
+              <div key={c.name} style={styles.healthRow}>
+                <Icon path={c.ok ? ICONS.check : ICONS.alert} size={14} color={c.ok ? "var(--ok)" : "var(--danger)"} style={{ marginRight: 8, flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>{c.name}</span>
+                <span style={{ color: "var(--muted)", fontSize: 11.5 }}>{c.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Bug Reports{openBugs.length > 0 ? ` (${openBugs.length} open)` : ""}</div>
+        {bugReports === null ? <div style={styles.emptyState}>Loading…</div> : openBugs.length === 0 ? (
+          <div style={styles.emptyState}>No open bug reports.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {openBugs.map((b) => (
+              <div key={b.id} style={styles.snapshotCard}>
+                <div style={{ fontSize: 13, color: "var(--chalk)", fontWeight: 600 }}>{b.description}</div>
+                <div style={styles.snapshotMeta}>{b.reporterName} · {b.page} · {new Date(b.submittedAt).toLocaleDateString("en-AU")}</div>
+                <button style={{ ...styles.rejectBtn, marginTop: 8 }} onClick={() => resolveBug(b)}>Mark resolved</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [trucks] = useState(DEFAULT_TRUCKS);
   const [fleet] = useState(DEFAULT_FLEET);
@@ -356,6 +616,38 @@ function App() {
   const lastSyncedAt = useRef(null);
 
   const showToast = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); }, []);
+
+  // Restore session on load, refresh the ID token (it's only valid ~1hr)
+  useEffect(() => {
+    (async () => {
+      const saved = loadSession();
+      if (!saved) { setAuthChecked(true); return; }
+      try {
+        const refreshed = await authRefresh(saved.refreshToken);
+        setCurrentIdToken(refreshed.idToken);
+        const next = { ...saved, idToken: refreshed.idToken, refreshToken: refreshed.refreshToken };
+        saveSession(next, !!localStorage.getItem(SESSION_KEY));
+        setSession(next);
+      } catch (e) { clearSession(); }
+      setAuthChecked(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    const interval = setInterval(async () => {
+      try {
+        const refreshed = await authRefresh(session.refreshToken);
+        setCurrentIdToken(refreshed.idToken);
+        const next = { ...session, idToken: refreshed.idToken, refreshToken: refreshed.refreshToken };
+        saveSession(next, !!localStorage.getItem(SESSION_KEY));
+        setSession(next);
+      } catch (e) {}
+    }, 45 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [session]);
+
+  const handleSignOut = () => { clearSession(); setCurrentIdToken(null); setSession(null); };
 
   const refresh = useCallback(async (silent) => {
     if (!silent) setLoading(true);
@@ -381,10 +673,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!session) return;
     refresh(false);
     const interval = setInterval(() => refresh(true), POLL_MS);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, session]);
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -516,6 +809,23 @@ function App() {
     return rel[0]?.repairRequired ? "repair" : "ok";
   };
 
+  if (!authChecked) return <div style={styles.app} />;
+  if (!session) return <ConsoleLoginPage onAuthed={setSession} />;
+  if (session.email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return (
+      <div style={styles.loginWrap}>
+        <div className="rise" style={styles.loginCard}>
+          <div style={styles.loginLogoRow}>
+            <div style={styles.logoMark}><Icon path={ICONS.gauge} size={24} color="#0E1A16" /></div>
+            <div><div style={styles.title}>SOUTHERN CROSS STATION</div><div style={styles.subtitle}>Not Authorised</div></div>
+          </div>
+          <p style={styles.statusMsg}>This console is restricted to the admin account. Signed in as {session.email}.</p>
+          <button style={styles.submitBtn} onClick={handleSignOut}>Sign out</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.app}>
       {flashEntry && (
@@ -542,6 +852,7 @@ function App() {
             {syncState === "ok" ? `Live · synced ${secondsAgo}s ago` : syncState === "error" ? "Offline" : "Connecting…"}
           </span>
           <button style={styles.refreshBtn} onClick={() => refresh(true)} title="Refresh now"><Icon path={ICONS.refresh} size={15} color="var(--muted)" /></button>
+          <button style={styles.refreshBtn} onClick={handleSignOut} title="Sign out"><Icon path={ICONS.logout} size={15} color="var(--muted)" /></button>
         </div>
       </header>
 
@@ -550,6 +861,7 @@ function App() {
           { id: "dashboard", label: "Dashboard", icon: ICONS.chart },
           { id: "status", label: "Fleet", icon: ICONS.gauge },
           { id: "log", label: "Log service", icon: ICONS.gauge },
+          { id: "admin", label: "Admin", icon: ICONS.shield },
           { id: "history", label: "History", icon: ICONS.list },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{ ...styles.tabBtn, ...(tab === t.id ? styles.tabBtnActive : {}) }}>{t.label}</button>
@@ -560,6 +872,7 @@ function App() {
         {tab === "dashboard" && <Dashboard trucks={trucks} logs={logs} inspections={inspections} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
+        {tab === "admin" && <AdminPanel showToast={showToast} />}
         {tab === "history" && <History logs={logs} inspections={inspections} onDeleteLog={deleteLog} onDeleteInspection={deleteInspection} onEditLog={startEditLog} onExport={exportExcel} onClearAll={clearAllData} trucks={trucks} />}
       </main>
 
@@ -1011,6 +1324,19 @@ const styles = {
   syncBadge: { display: "flex", alignItems: "center", fontSize: 10.5, fontWeight: 700, color: "var(--ok)", background: "rgba(63,185,138,0.12)", padding: "5px 10px", borderRadius: 20, textTransform: "uppercase", letterSpacing: "0.03em", whiteSpace: "nowrap" },
   syncBadgeError: { color: "var(--danger)", background: "rgba(229,72,77,0.12)" },
   refreshBtn: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: 8, display: "flex" },
+  loginWrap: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  loginCard: { width: "100%", maxWidth: 380, background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--amber-dim)", borderRadius: 20, padding: "28px 26px", boxShadow: "0 20px 50px rgba(0,0,0,.5)" },
+  loginLogoRow: { display: "flex", alignItems: "center", gap: 12, marginBottom: 24 },
+  inputWithIcon: { position: "relative", display: "flex", alignItems: "center" },
+  inputIcon: { position: "absolute", left: 12, pointerEvents: "none" },
+  inputIndented: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 9, padding: "10px 11px 10px 36px", color: "var(--chalk)", fontSize: 14.5, width: "100%" },
+  eyeToggle: { position: "absolute", right: 10, background: "none", border: "none", display: "flex", padding: 4, cursor: "pointer" },
+  rememberRow: { display: "flex", alignItems: "center", gap: 10, margin: "6px 0 18px", cursor: "pointer" },
+  loginError: { display: "flex", alignItems: "flex-start", background: "rgba(229,72,77,0.1)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, color: "var(--danger)", marginBottom: 16 },
+  statusMsg: { fontSize: 13.5, color: "var(--chalk)", lineHeight: 1.5, marginBottom: 20 },
+  healthRow: { display: "flex", alignItems: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 9, padding: "9px 12px", fontSize: 12.5, color: "var(--chalk)" },
+  approveBtn: { flex: 1, background: "rgba(63,185,138,0.14)", border: "1px solid rgba(63,185,138,0.3)", borderRadius: 8, padding: "8px 10px", color: "var(--ok)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
+  rejectBtn: { flex: 1, background: "rgba(229,72,77,0.1)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 8, padding: "8px 10px", color: "var(--danger)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
   tabBar: { display: "flex", gap: 6, padding: "12px 14px 0", overflowX: "auto", maxWidth: 1360, margin: "0 auto" },
   tabBtn: { display: "flex", alignItems: "center", background: "none", border: "none", color: "var(--muted)", fontSize: 13, fontWeight: 600, padding: "9px 14px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
   tabBtnActive: { background: "var(--panel-2)", color: "var(--amber)" },
