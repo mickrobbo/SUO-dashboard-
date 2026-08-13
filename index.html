@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.2";
+const APP_VERSION = "2026-08-14.4";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -208,12 +208,12 @@ const CHECKLIST_ITEMS = [
   "Wash ute", "Clean interior of ute", "Re-stock consumables in ute",
 ];
 const TOILET_FAULT_CODES = [
-  { code: "01", name: "Tank Full", description: "Waste tank level sensor indicates 95% fill for 5+ minutes" },
-  { code: "02", name: "No Compressed Air / Pressure Rise", description: "No pressure in intermediate tank" },
-  { code: "03", name: "Pressure Vac", description: "Pressure detected instead of vacuum in intermediate tank" },
-  { code: "04", name: "Pressure Start", description: "Over-pressure in intermediate tank when initiating a flush cycle" },
-  { code: "05", name: "Bowl Full / Water Bowl", description: "Bowl level sensor recognises overfilling for 10+ seconds" },
-  { code: "06", name: "No Fresh Water / Water Tank", description: "Water tank level sensor recognises low flush water" },
+  { code: "01", name: "Tank Full", description: "Waste tank level sensor indicates 95% fill for 5+ minutes", causes: ["Waste tank sensor indicates 95% full", "Sensor defective"] },
+  { code: "02", name: "No Compressed Air / Pressure Rise", description: "No pressure in intermediate tank. In 10 minute intervals the system will attempt a restart. If the error is corrected a flush cycle is started.", causes: ["No compressed air", "Air filter clogged up", "Entrance or exit valve does not seal completely", "Pressure sensor faulty"] },
+  { code: "03", name: "Pressure Vac", description: "Pressure detected instead of vacuum inside the intermediate tank during operation (>0.2 bar)", causes: ["Air from vacuum unit cannot escape — vacuum ventilation pipe blocked", "Waste transport pipe could be plugged up", "Waste tank is full, frozen up or cannot be vented", "Defective vacuum pump piston blocked"] },
+  { code: "04", name: "Pressure Start", description: "Over-pressure in intermediate tank when initiating a flush cycle", causes: ["Plug-up in the waste transport pipe or in the tank", "Pressure release impossible, due to waste tank full or frozen", "Ventilation pipe clogged up (blocked exhaust)", "Exit valve does not open"] },
+  { code: "05", name: "Bowl Full / Water Bowl", description: "Bowl level sensor recognises overfilling for 10+ seconds. System runs five flush cycles without flush water; shuts down if still overfilled.", causes: ["System is blocked", "Air from vacuum unit cannot escape — vacuum ventilation pipe blocked", "Vacuum ventilation pipe blocked"] },
+  { code: "06", name: "No Fresh Water / Water Tank", description: "Water tank level sensor recognises low flush water", causes: ["No water", "Water filter clogged", "Water valve defective"] },
 ];
 const FAULT_FLAGS = ["Requires change out", "A side evac pipe blocked", "B side evac pipe blocked", "No water", "Blocked", "Vandalised", "Dirty"];
 
@@ -347,6 +347,7 @@ const ICONS = {
   pulse: "M22 12h-4l-3 9L9 3l-3 9H2",
   user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  chevronDown: "M6 9l6 6 6-6",
 };
 
 /* ---------- Charts ---------- */
@@ -1038,6 +1039,7 @@ function Dashboard({ trucks, logs, inspections }) {
   const adhoc = logs.filter((l) => l.serviceType === "Ad-hoc").length;
 
   const [snapshotFilters, setSnapshotFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all" });
+  const [expandedFault, setExpandedFault] = useState(null);
 
   const todayStr = todayISO();
   const workload = trucks.map((truck) => ({ truck, count: logs.filter((l) => l.truck === truck && l.date === todayStr).length }));
@@ -1155,8 +1157,11 @@ function Dashboard({ trucks, logs, inspections }) {
           <div className={trainRepairSnapshot.length > 3 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(trainRepairSnapshot.length > 3 ? styles.scrollCap : {}) }}>
             {trainRepairSnapshot.map((entry) => {
               const age = ageBadge(entry);
+              const key = `${entry.trainType}|${entry.fleetNo}`;
+              const isExpanded = expandedFault === key;
+              const codeInfo = TOILET_FAULT_CODES.find((c) => c.code === entry.faultCode);
               return (
-                <div key={`${entry.trainType}|${entry.fleetNo}`} className="snapshot-card" style={styles.snapshotCard}>
+                <div key={key} className="snapshot-card" style={{ ...styles.snapshotCard, cursor: "pointer" }} onClick={() => setExpandedFault(isExpanded ? null : key)}>
                   <div style={styles.snapshotTop}>
                     <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
                   </div>
@@ -1164,7 +1169,10 @@ function Dashboard({ trucks, logs, inspections }) {
                     <span style={styles.snapshotDate}>{fmtDate(entry.date)}</span>
                     <span style={{ ...styles.ageBadge, color: age.color, background: `${age.color}22` }}>{age.label}</span>
                   </div>
-                  <div style={styles.snapshotFault}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5, flexShrink: 0 }} />{faultSummary(entry)}</div>
+                  <div style={styles.snapshotFault}>
+                    <Icon path={ICONS.alert} size={12} style={{ marginRight: 5, flexShrink: 0 }} />{faultSummary(entry)}
+                    <Icon path={ICONS.chevronDown} size={13} color="var(--muted)" style={{ marginLeft: "auto", flexShrink: 0, transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+                  </div>
                   <div style={styles.snapshotMeta}>
                     {entry.truck} · {entry.operator || "unassigned"}{entry.photo && " · photo attached"}
                     {(entry.pumpedLocked || entry.deferred72h) && (
@@ -1174,6 +1182,28 @@ function Dashboard({ trucks, logs, inspections }) {
                       </span>
                     )}
                   </div>
+                  {isExpanded && (
+                    <div style={styles.faultDetailBox} onClick={(e) => e.stopPropagation()}>
+                      {codeInfo ? (
+                        <React.Fragment>
+                          <div style={styles.faultDetailLabel}>Description</div>
+                          <div style={styles.faultDetailText}>{codeInfo.description}</div>
+                          <div style={{ ...styles.faultDetailLabel, marginTop: 10 }}>Possible cause</div>
+                          <ul style={styles.faultCauseList}>
+                            {codeInfo.causes.map((c, i) => <li key={i}>{c}</li>)}
+                          </ul>
+                        </React.Fragment>
+                      ) : (
+                        <div style={styles.faultDetailText}>No fault code recorded for this entry — see flags/notes above for detail.</div>
+                      )}
+                      {entry.notes && (
+                        <React.Fragment>
+                          <div style={{ ...styles.faultDetailLabel, marginTop: 10 }}>Operator notes</div>
+                          <div style={styles.faultDetailText}>{entry.notes}</div>
+                        </React.Fragment>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1269,13 +1299,17 @@ function FaultDetails({ f, set }) {
   const selected = TOILET_FAULT_CODES.find((c) => c.code === f.faultCode);
   return (
     <div style={styles.faultBox}>
-      <Field label="Fault code">
-        <select style={styles.select} value={f.faultCode} onChange={(e) => set("faultCode", e.target.value)}>
-          <option value="">None / not shown</option>
-          {TOILET_FAULT_CODES.map((c) => <option key={c.code} value={c.code}>CODE {c.code} — {c.name}</option>)}
-        </select>
-        {selected && <span style={styles.faultCodeHint}>{selected.description}</span>}
-      </Field>
+      {f.trainType === "Locomotive" ? (
+        <div style={styles.faultCodeHint}>Locomotive toilets are mechanical (no electrical fault codes) — use the checklist below and notes for detail.</div>
+      ) : (
+        <Field label="Fault code">
+          <select style={styles.select} value={f.faultCode} onChange={(e) => set("faultCode", e.target.value)}>
+            <option value="">None / not shown</option>
+            {TOILET_FAULT_CODES.map((c) => <option key={c.code} value={c.code}>CODE {c.code} — {c.name}</option>)}
+          </select>
+          {selected && <span style={styles.faultCodeHint}>{selected.description}</span>}
+        </Field>
+      )}
       <div style={styles.checkGrid}>
         {FAULT_FLAGS.map((flag) => {
           const active = flags.includes(flag);
@@ -1315,6 +1349,9 @@ function ServiceForm({ trucks, fleet, editingEntry, onSubmit, onCancelEdit }) {
   useEffect(() => {
     if (carOptions.length && !carOptions.includes(f.car)) set("car", carOptions[0]);
   }, [f.trainType, f.fleetNo]);
+  useEffect(() => {
+    if (f.trainType === "Locomotive" && f.faultCode) set("faultCode", "");
+  }, [f.trainType]);
   return (
     <form onSubmit={submit} style={styles.form}>
       {editingEntry && (<div style={styles.editBanner}><span>Editing entry from {fmtDate(editingEntry.date)}</span><button type="button" style={styles.cancelEditBtn} onClick={onCancelEdit}>Cancel</button></div>)}
@@ -1504,7 +1541,11 @@ const styles = {
   snapshotTruck: { display: "flex", alignItems: "center", fontSize: 14, fontWeight: 700, color: "var(--chalk)", lineHeight: 1.35, flexWrap: "wrap" },
   snapshotSubRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 },
   snapshotDate: { fontSize: 11.5, color: "var(--muted)" },
-  snapshotFault: { fontSize: 13, color: "var(--danger)", fontWeight: 600, marginTop: 8, display: "flex", alignItems: "flex-start" },
+  snapshotFault: { fontSize: 13, color: "var(--danger)", fontWeight: 600, marginTop: 8, display: "flex", alignItems: "center" },
+  faultDetailBox: { marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--panel-3)", cursor: "default" },
+  faultDetailLabel: { fontSize: 10.5, fontWeight: 700, color: "var(--amber-light)", textTransform: "uppercase", letterSpacing: "0.04em" },
+  faultDetailText: { fontSize: 12.5, color: "var(--chalk)", marginTop: 4, lineHeight: 1.5 },
+  faultCauseList: { fontSize: 12.5, color: "var(--chalk)", margin: "4px 0 0", paddingLeft: 18, lineHeight: 1.6 },
   snapshotMeta: { fontSize: 12, color: "var(--muted)", marginTop: 4, display: "flex", alignItems: "center", flexWrap: "wrap" },
   repeatCountBadge: { fontSize: 11, fontWeight: 700, color: "var(--danger)", background: "rgba(229,72,77,0.14)", padding: "3px 9px", borderRadius: 20 },
   panelTitle: { fontSize: 13, fontWeight: 700, color: "var(--amber-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 16 },
