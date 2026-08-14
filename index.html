@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.26";
+const APP_VERSION = "2026-08-14.28";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -995,6 +995,11 @@ function App() {
     try { await fbSet("services", entry.id, updated); setLogs((p) => p.map((l) => (l.id === entry.id ? updated : l))); showToast("Fault marked resolved"); }
     catch (e) { showToast("Update failed — check connection"); }
   };
+  const resolveInspection = async (entry, notes) => {
+    const updated = { ...entry, resolved: true, resolvedAt: Date.now(), resolvedBy: profile?.name || session.email, resolutionNotes: notes || "" };
+    try { await fbSet("inspections", entry.id, updated); setInspections((p) => p.map((i) => (i.id === entry.id ? updated : i))); showToast("Inspection fault marked resolved"); }
+    catch (e) { showToast("Update failed — check connection"); }
+  };
   const updateLog = async (entry) => {
     if (!profile?.isAdmin) { showToast("Only admins can edit entries"); return; }
     try { await fbSet("services", entry.id, entry); setLogs((p) => p.map((l) => (l.id === entry.id ? entry : l))); setEditingLog(null); showToast("Service entry updated"); }
@@ -1130,7 +1135,7 @@ function App() {
   };
   const latestStatus = (truck) => {
     const insp = latestInspection(truck);
-    return insp?.repairRequired ? "repair" : "ok";
+    return insp?.repairRequired && !insp?.resolved ? "repair" : "ok";
   };
 
   if (!authChecked) return <div style={styles.app} />;
@@ -1226,7 +1231,7 @@ function App() {
 
       <main className="app-wrap" style={styles.main}>
         {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} onResolveFault={resolveFault} showToast={showToast} onViewOperatorHistory={viewOperatorHistory} />}
-        {tab === "queue" && <ActionQueue logs={logs} inspections={inspections} onResolve={resolveFault} />}
+        {tab === "queue" && <ActionQueue logs={logs} inspections={inspections} onResolve={resolveFault} onResolveInspection={resolveInspection} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} latestInspection={latestInspection} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
@@ -1347,7 +1352,7 @@ function FortnightlyReport({ logs, inspections, trucks, onClose }) {
   );
 }
 
-function ActionQueue({ logs, inspections, onResolve }) {
+function ActionQueue({ logs, inspections, onResolve, onResolveInspection }) {
   const now = Date.now();
   const dayMs = 86400000;
 
@@ -1390,7 +1395,7 @@ function ActionQueue({ logs, inspections, onResolve }) {
       if (!latestByTruck[i.truck] || (i.submittedAt || 0) > (latestByTruck[i.truck].submittedAt || 0)) latestByTruck[i.truck] = i;
     });
     return Object.values(latestByTruck)
-      .filter((i) => i.repairRequired || Object.values(i.checklist || {}).includes("Fail"))
+      .filter((i) => !i.resolved && (i.repairRequired || Object.values(i.checklist || {}).includes("Fail")))
       .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
   }, [inspections]);
 
@@ -1489,6 +1494,7 @@ function ActionQueue({ logs, inspections, onResolve }) {
                   </div>
                   <div style={styles.snapshotMeta}>{fmtDate(i.date)} · {i.operator}</div>
                   <div style={{ ...styles.snapshotFault, marginTop: 6 }}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5 }} />{fails.length > 0 ? `Failed: ${fails.map(([k]) => k).join(", ")}` : (i.faultText || "Fault reported")}<PhotoLink photo={i.photo} /></div>
+                  <ResolveFaultInline entry={i} onResolve={onResolveInspection} />
                 </div>
               );
             })}
@@ -1711,7 +1717,7 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
     const now = Date.now();
     const byCar = {};
     logs.forEach((l) => {
-      if (!l.repairRequired || !l.car) return;
+      if (!l.repairRequired || l.resolved || !l.car) return;
       const ts = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
       if (now - ts > weekMs) return;
       const key = l.car;
@@ -1940,10 +1946,11 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
                   <span style={styles.snapshotTruck}><Icon path={ICONS.alert} size={14} color="var(--danger)" style={{ marginRight: 6 }} />Car {car}</span>
                   <span style={styles.repeatCountBadge}>{entries.length}× this week</span>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
                   {entries.map((e) => (
-                    <div key={e.id} style={styles.snapshotMeta}>
-                      {fmtDate(e.date)} — {e.trainType} {e.fleetNo} · {faultSummary(e)}
+                    <div key={e.id} style={{ borderTop: "1px solid var(--panel-3)", paddingTop: 8 }}>
+                      <div style={styles.snapshotMeta}>{fmtDate(e.date)} — {e.trainType} {e.fleetNo} · {faultSummary(e)}</div>
+                      <ResolveFaultInline entry={e} onResolve={onResolveFault} />
                     </div>
                   ))}
                 </div>
