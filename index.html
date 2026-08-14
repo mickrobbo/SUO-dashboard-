@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.22";
+const APP_VERSION = "2026-08-14.23";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -398,11 +398,12 @@ function BarChart({ data, color = "var(--amber)", height = 180, onBarClick }) {
   const bottomPad = 36;
   const topPad = 26;
   const maxBarWidth = 46;
+  const vbWidth = Math.max(300, Math.min(620, data.length * 72)); // viewBox width itself scales with category count
   return (
-    <div style={{ ...styles.chartWrap, maxWidth: 460, margin: "0 auto" }}>
-      <svg viewBox={`0 0 300 ${height}`} width="100%" height={height} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible", display: "block" }}>
+    <div style={{ ...styles.chartWrap, maxWidth: vbWidth, margin: "0 auto" }}>
+      <svg viewBox={`0 0 ${vbWidth} ${height}`} width="100%" height={height} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible", display: "block" }}>
         {data.map((d, i) => {
-          const slot = 300 / data.length;
+          const slot = vbWidth / data.length;
           const bw = Math.min(maxBarWidth, slot - 14);
           const x = i * slot + (slot - bw) / 2;
           const isZero = d.value <= 0;
@@ -2559,7 +2560,7 @@ const styles = {
   panelAlert: { border: "1px solid rgba(229,72,77,0.4)", boxShadow: "0 10px 24px rgba(0,0,0,.25), 0 0 0 1px rgba(229,72,77,0.15)" },
   allClear: { display: "flex", alignItems: "center", fontSize: 13.5, color: "var(--ok)", fontWeight: 600, padding: "6px 2px" },
   snapshotCard: { background: "var(--panel)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 10, padding: "12px 14px" },
-  scrollCap: { maxHeight: 322, overflowY: "auto", paddingRight: 6 },
+  scrollCap: { maxHeight: 292, overflowY: "auto", paddingRight: 6 },
   snapshotTop: { display: "flex", alignItems: "flex-start", flexWrap: "wrap", justifyContent: "space-between", gap: 8 },
   snapshotTruck: { display: "flex", alignItems: "center", fontSize: 14, fontWeight: 700, color: "var(--chalk)", lineHeight: 1.35, flexWrap: "wrap" },
   snapshotSubRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 },
