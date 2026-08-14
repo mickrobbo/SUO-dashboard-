@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.7";
+const APP_VERSION = "2026-08-14.8";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -362,20 +362,22 @@ const ICONS = {
 };
 
 /* ---------- Charts ---------- */
-function BarChart({ data, color = "var(--amber)", height = 190 }) {
+function BarChart({ data, color = "var(--amber)", height = 160 }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   const max = Math.max(1, ...data.map((d) => d.value));
   const hasData = data.some((d) => d.value > 0);
   if (!hasData) return <div style={styles.emptyState}>No data yet.</div>;
-  const bottomPad = 38;
-  const topPad = 22;
+  const bottomPad = 34;
+  const topPad = 18;
+  const maxBarWidth = 44;
   return (
     <div style={styles.chartWrap}>
-      <svg viewBox={`0 0 300 ${height}`} width="100%" height={height} preserveAspectRatio="none" style={{ overflow: "visible" }}>
+      <svg viewBox={`0 0 300 ${height}`} width="100%" height={height} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible", display: "block" }}>
         {data.map((d, i) => {
+          const slot = 300 / data.length;
+          const bw = Math.min(maxBarWidth, slot - 14);
+          const x = i * slot + (slot - bw) / 2;
           const barH = (d.value / max) * (height - bottomPad - topPad);
-          const x = i * (300 / data.length) + 5;
-          const bw = 300 / data.length - 10;
           const active = hoverIdx === i;
           const labelX = x + bw / 2;
           const barY = height - bottomPad - barH;
