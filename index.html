@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.4";
+const APP_VERSION = "2026-08-14.5";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -348,6 +348,7 @@ const ICONS = {
   user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
   shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
   chevronDown: "M6 9l6 6 6-6",
+  plus: "M12 5v14M5 12h14",
 };
 
 /* ---------- Charts ---------- */
@@ -950,7 +951,7 @@ function App() {
       </nav>
 
       <main className="app-wrap" style={styles.main}>
-        {tab === "dashboard" && <Dashboard trucks={trucks} logs={logs} inspections={inspections} />}
+        {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} showToast={showToast} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
@@ -1028,7 +1029,7 @@ function useCountUp(value, duration = 600) {
   return display;
 }
 
-function Dashboard({ trucks, logs, inspections }) {
+function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) {
   const totalServices = logs.length;
   const totalInspections = inspections.length;
   const openRepairs = logs.filter((l) => l.repairRequired).length + inspections.filter((i) => i.repairRequired).length;
@@ -1040,9 +1041,30 @@ function Dashboard({ trucks, logs, inspections }) {
 
   const [snapshotFilters, setSnapshotFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all" });
   const [expandedFault, setExpandedFault] = useState(null);
+  const [reportFaultOpen, setReportFaultOpen] = useState(false);
 
   const todayStr = todayISO();
   const workload = trucks.map((truck) => ({ truck, count: logs.filter((l) => l.truck === truck && l.date === todayStr).length }));
+
+  const amPm = useMemo(() => {
+    let am = 0, pm = 0;
+    logs.forEach((l) => {
+      if (!l.time) return;
+      const hour = parseInt(l.time.split(":")[0], 10);
+      if (Number.isNaN(hour)) return;
+      if (hour < 12) am++; else pm++;
+    });
+    return { am, pm };
+  }, [logs]);
+
+  const operatorTally = useMemo(() => {
+    const counts = {};
+    logs.forEach((l) => { const name = l.operator || "Unassigned"; counts[name] = (counts[name] || 0) + 1; });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, value]) => ({ label: name.split(" ")[0].slice(0, 10), value }));
+  }, [logs]);
 
   const allOpenFaults = useMemo(() => {
     const byFleet = {};
@@ -1148,7 +1170,10 @@ function Dashboard({ trucks, logs, inspections }) {
       <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".08s", ...(trainRepairSnapshot.length ? styles.panelAlert : {}) }}>
         <div style={styles.panelTitleRow}>
           <div className="panel-title" style={{ ...styles.panelTitle, marginBottom: 0 }}>Fleet Repair Snapshot</div>
-          <span style={styles.liveTag}><Icon path={ICONS.circle} size={7} className="live-dot" style={{ marginRight: 4 }} />Live</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button style={styles.reportFaultBtn} onClick={() => setReportFaultOpen(true)}><Icon path={ICONS.plus} size={13} style={{ marginRight: 5 }} />Report fault</button>
+            <span style={styles.liveTag}><Icon path={ICONS.circle} size={7} className="live-dot" style={{ marginRight: 4 }} />Live</span>
+          </div>
         </div>
         <FilterBar filters={snapshotFilters} setFilters={setSnapshotFilters} trucks={trucks} showOpenOnly={false} showFault={true} />
         {trainRepairSnapshot.length === 0 ? (
@@ -1268,9 +1293,116 @@ function Dashboard({ trucks, logs, inspections }) {
         </div>
       </div>
 
+      <div className="desktop-2col">
+        <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".13s" }}>
+          <div className="panel-title" style={styles.panelTitle}>AM / PM Servicing Trend</div>
+          <DonutStat a={amPm.am} b={amPm.pm} labelA="AM (before 12pm)" labelB="PM (12pm+)" colorA="var(--amber)" colorB="var(--ok)" />
+        </div>
+        <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".14s" }}>
+          <div className="panel-title" style={styles.panelTitle}>Services by Operator</div>
+          <BarChart data={operatorTally} color="var(--amber)" />
+        </div>
+      </div>
+
       <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".2s" }}>
         <div className="panel-title" style={styles.panelTitle}>Planned vs Ad-Hoc</div>
         <DonutStat a={planned} b={adhoc} labelA="Planned" labelB="Ad-hoc" />
+      </div>
+
+      {reportFaultOpen && (
+        <ReportFaultModal trucks={trucks} fleet={fleet} onClose={() => setReportFaultOpen(false)}
+          onSubmit={(entry) => { onAddFault(entry); setReportFaultOpen(false); }} />
+      )}
+    </div>
+  );
+}
+
+function ReportFaultModal({ trucks, fleet, onClose, onSubmit }) {
+  const [trainType, setTrainType] = useState(TRAIN_TYPES[0]);
+  const [fleetNo, setFleetNo] = useState("");
+  const [car, setCar] = useState("");
+  const [faultCode, setFaultCode] = useState("");
+  const [faultFlags, setFaultFlags] = useState([]);
+  const [reportedBy, setReportedBy] = useState("");
+  const [notes, setNotes] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [saving, setSaving] = useState(false);
+
+  const vehicleOptions = fleet?.[trainType] || [];
+  const carOptions = getCarOptions(trainType, fleetNo);
+  useEffect(() => {
+    if (carOptions.length && !carOptions.includes(car)) setCar(carOptions[0]);
+    if (!carOptions.length && car) setCar("");
+  }, [trainType, fleetNo]);
+  useEffect(() => { if (trainType === "Locomotive" && faultCode) setFaultCode(""); }, [trainType]);
+
+  const toggleFlag = (flag) => setFaultFlags((p) => (p.includes(flag) ? p.filter((x) => x !== flag) : [...p, flag]));
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!fleetNo || !reportedBy.trim() || saving) return;
+    setSaving(true);
+    const entry = {
+      date, time: new Date().toTimeString().slice(0, 5), truck: "Fitter Report", trainType, fleetNo, car,
+      serviceType: "Ad-hoc", repairRequired: true, faultCode, faultFlags, pumpedLocked: false, deferred72h: false,
+      photo: null, reported: true, operator: reportedBy.trim(), notes: notes.trim(), fitterReport: true,
+    };
+    onSubmit(entry);
+  };
+
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div className="rise" style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <span style={styles.panelTitleText}>Report a fault</span>
+          <button type="button" style={styles.refreshBtn} onClick={onClose}><Icon path={ICONS.x} size={14} color="var(--muted)" /></button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>For a fault reported back by a fitter, without an operator having logged a truck visit.</div>
+        <form onSubmit={submit}>
+          <div className="desktop-2col" style={styles.formGrid}>
+            <Field label="Date"><input style={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+            <Field label="Reported by"><input style={styles.input} placeholder="Fitter's name" value={reportedBy} onChange={(e) => setReportedBy(e.target.value)} /></Field>
+            <Field label="Train type"><select style={styles.select} value={trainType} onChange={(e) => { setTrainType(e.target.value); setFleetNo(""); }}>{TRAIN_TYPES.map((t) => <option key={t}>{t}</option>)}</select></Field>
+            <Field label="Vehicle number">
+              <input style={styles.input} list="report-fault-fleet-options" placeholder={trainType === "N-Set" ? "e.g. VN12" : "Type or pick"} value={fleetNo} onChange={(e) => setFleetNo(e.target.value)} />
+              <datalist id="report-fault-fleet-options">{vehicleOptions.map((o) => <option key={o} value={o} />)}</datalist>
+            </Field>
+            <Field label="Car number">
+              {carOptions.length > 1 ? (
+                <select style={styles.select} value={car} onChange={(e) => setCar(e.target.value)}>{carOptions.map((o) => <option key={o}>{o}</option>)}</select>
+              ) : (
+                <input style={styles.input} value={car || (carOptions[0] || "")} onChange={(e) => setCar(e.target.value)} />
+              )}
+            </Field>
+          </div>
+
+          {trainType === "Locomotive" ? (
+            <div style={styles.faultCodeHint}>Locomotive toilets are mechanical — no electrical fault codes apply.</div>
+          ) : (
+            <Field label="Fault code">
+              <select style={styles.select} value={faultCode} onChange={(e) => setFaultCode(e.target.value)}>
+                <option value="">None / not shown</option>
+                {TOILET_FAULT_CODES.map((c) => <option key={c.code} value={c.code}>CODE {c.code} — {c.name}</option>)}
+              </select>
+            </Field>
+          )}
+
+          <div style={styles.checkGrid}>
+            {FAULT_FLAGS.map((flag) => {
+              const active = faultFlags.includes(flag);
+              return (
+                <div key={flag} style={styles.checkItem} onClick={() => toggleFlag(flag)}>
+                  <div style={{ ...styles.checkbox, ...(active ? styles.checkboxOn : {}) }}>{active && <Icon path={ICONS.check} size={13} color="#0E1A16" />}</div>
+                  <span style={styles.checkItemLabel}>{flag}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <Field label="Notes"><textarea style={styles.textarea} placeholder="Details of what the fitter reported" value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
+
+          <button type="submit" disabled={saving} style={{ ...styles.submitBtn, opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : "Add fault to dashboard"}</button>
+        </form>
       </div>
     </div>
   );
@@ -1447,6 +1579,11 @@ const styles = {
   syncBadge: { display: "flex", alignItems: "center", fontSize: 10.5, fontWeight: 700, color: "var(--ok)", background: "rgba(63,185,138,0.12)", padding: "5px 10px", borderRadius: 20, textTransform: "uppercase", letterSpacing: "0.03em", whiteSpace: "nowrap" },
   syncBadgeError: { color: "var(--danger)", background: "rgba(229,72,77,0.12)" },
   refreshBtn: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: 8, display: "flex" },
+  reportFaultBtn: { display: "flex", alignItems: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: "6px 11px", color: "var(--amber-light)", fontSize: 11.5, fontWeight: 700, cursor: "pointer" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(10,13,12,0.75)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 70, padding: "0 0 0 0" },
+  modalCard: { width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", background: "var(--panel-2)", border: "1px solid var(--panel-3)", borderRadius: "18px 18px 0 0", padding: 22 },
+  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
+  panelTitleText: { fontSize: 13, fontWeight: 700, color: "var(--amber-light)", textTransform: "uppercase", letterSpacing: "0.05em" },
   loginWrap: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
   loginCard: { width: "100%", maxWidth: 380, background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--amber-dim)", borderRadius: 20, padding: "28px 26px", boxShadow: "0 20px 50px rgba(0,0,0,.5)" },
   loginLogoRow: { display: "flex", alignItems: "center", gap: 12, marginBottom: 24 },
