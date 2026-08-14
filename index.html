@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.5";
+const APP_VERSION = "2026-08-14.6";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -115,6 +115,7 @@ const ALLOWED_DOMAIN = "@alstomgroup.com";
 const ADMIN_EMAIL = "michael.roberton@alstomgroup.com";
 
 const AUTH_SIGNIN_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
+const AUTH_SIGNUP_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`;
 const AUTH_REFRESH_URL = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
 
 let CURRENT_ID_TOKEN = null;
@@ -144,12 +145,19 @@ async function fbDelete(path, id) {
   if (!res.ok) throw new Error("Firebase delete failed: " + res.status);
 }
 async function fetchOperatorProfile(uid) { return fbGetRaw(`operators/${uid}`); }
+async function saveOperatorProfile(uid, profile) { return fbSet("operators", uid, profile); }
 
-/* ---------- Auth REST calls (login only — accounts are created via the Ledger) ---------- */
+/* ---------- Auth REST calls ---------- */
 async function authSignIn(email, password) {
   const res = await fetch(AUTH_SIGNIN_URL, { method: "POST", body: JSON.stringify({ email, password, returnSecureToken: true }) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || "Log in failed");
+  return data;
+}
+async function authSignUp(email, password) {
+  const res = await fetch(AUTH_SIGNUP_URL, { method: "POST", body: JSON.stringify({ email, password, returnSecureToken: true }) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "Sign up failed");
   return data;
 }
 async function authRefresh(refreshToken) {
@@ -163,7 +171,9 @@ async function authRefresh(refreshToken) {
 }
 function authErrorMessage(err) {
   const code = err.message || "";
+  if (code.includes("EMAIL_EXISTS")) return "An account with that email already exists — try logging in instead.";
   if (code.includes("EMAIL_NOT_FOUND") || code.includes("INVALID_PASSWORD") || code.includes("INVALID_LOGIN_CREDENTIALS")) return "Incorrect email or password.";
+  if (code.includes("WEAK_PASSWORD")) return "Password must be at least 6 characters.";
   if (code.includes("INVALID_EMAIL")) return "That doesn't look like a valid email address.";
   if (code.includes("PASTE_YOUR_WEB_API_KEY")) return "Console isn't configured yet — missing Firebase Web API Key.";
   return "Something went wrong. Please try again.";
@@ -441,6 +451,8 @@ function DonutStat({ a, b, labelA, labelB, colorA = "var(--amber)", colorB = "va
 
 /* ---------- App ---------- */
 function ConsoleLoginPage({ onAuthed }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -452,10 +464,21 @@ function ConsoleLoginPage({ onAuthed }) {
     e.preventDefault();
     setError("");
     if (!email || !password) { setError("Enter your email and password."); return; }
+    if (mode === "signup") {
+      if (!name.trim()) { setError("Enter your name."); return; }
+      if (!email.trim().toLowerCase().endsWith(ALLOWED_DOMAIN)) { setError(`Sign up is restricted to ${ALLOWED_DOMAIN} addresses.`); return; }
+    }
     setBusy(true);
     try {
-      const auth = await authSignIn(email, password);
-      setCurrentIdToken(auth.idToken);
+      let auth;
+      if (mode === "signup") {
+        auth = await authSignUp(email, password);
+        setCurrentIdToken(auth.idToken);
+        await saveOperatorProfile(auth.localId, { name: name.trim(), email, status: "approved", createdAt: Date.now() });
+      } else {
+        auth = await authSignIn(email, password);
+        setCurrentIdToken(auth.idToken);
+      }
       const session = { uid: auth.localId, idToken: auth.idToken, refreshToken: auth.refreshToken, email };
       saveSession(session, rememberMe);
       onAuthed(session);
@@ -470,15 +493,34 @@ function ConsoleLoginPage({ onAuthed }) {
           <div style={styles.logoMark}><Icon path={ICONS.gauge} size={24} color="#0E1A16" /></div>
           <div>
             <div style={styles.title}>SOUTHERN CROSS STATION</div>
-            <div style={styles.subtitle}>SUO Dashboard — Admin Login</div>
+            <div style={styles.subtitle}>SUO Dashboard</div>
           </div>
         </div>
+
+        <div style={styles.loginTabs}>
+          {["login", "signup"].map((m) => (
+            <button key={m} type="button" onClick={() => { setMode(m); setError(""); }} style={styles.loginTab}>
+              {m === "login" ? "Log In" : "Sign Up"}
+              {mode === m && <span style={styles.loginTabUnderline} />}
+            </button>
+          ))}
+        </div>
+
         <form onSubmit={submit}>
+          {mode === "signup" && (
+            <Field label="Your name">
+              <div style={styles.inputWithIcon}>
+                <Icon path={ICONS.user} size={15} color="var(--muted)" style={styles.inputIcon} />
+                <input style={styles.inputIndented} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+            </Field>
+          )}
           <Field label="Email">
             <div style={styles.inputWithIcon}>
               <Icon path={ICONS.mail} size={15} color="var(--muted)" style={styles.inputIcon} />
               <input style={styles.inputIndented} type="email" autoCapitalize="none" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
             </div>
+            {mode === "signup" && <span style={styles.fieldHint}>{ALLOWED_DOMAIN} addresses are approved automatically</span>}
           </Field>
           <Field label="Password">
             <div style={styles.inputWithIcon}>
@@ -494,7 +536,7 @@ function ConsoleLoginPage({ onAuthed }) {
             <span style={styles.toggleLabel}>Remember me</span>
           </div>
           {error && <div style={styles.loginError}><Icon path={ICONS.alert} size={13} style={{ marginRight: 6, flexShrink: 0 }} />{error}</div>}
-          <button type="submit" disabled={busy} style={{ ...styles.submitBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Please wait…" : "Log In"}</button>
+          <button type="submit" disabled={busy} style={{ ...styles.submitBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Please wait…" : mode === "login" ? "Log In" : "Sign Up"}</button>
         </form>
       </div>
     </div>
@@ -1587,6 +1629,10 @@ const styles = {
   loginWrap: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
   loginCard: { width: "100%", maxWidth: 380, background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--amber-dim)", borderRadius: 20, padding: "28px 26px", boxShadow: "0 20px 50px rgba(0,0,0,.5)" },
   loginLogoRow: { display: "flex", alignItems: "center", gap: 12, marginBottom: 24 },
+  loginTabs: { display: "flex", gap: 22, borderBottom: "1px solid var(--panel-3)", marginBottom: 20 },
+  loginTab: { position: "relative", background: "none", border: "none", color: "var(--muted)", fontSize: 13.5, fontWeight: 700, padding: "0 2px 12px", cursor: "pointer" },
+  loginTabUnderline: { position: "absolute", left: 0, right: 0, bottom: -1, height: 2, background: "var(--amber)", borderRadius: 2 },
+  fieldHint: { fontSize: 11, color: "var(--muted)", marginTop: 4 },
   inputWithIcon: { position: "relative", display: "flex", alignItems: "center" },
   inputIcon: { position: "absolute", left: 12, pointerEvents: "none" },
   inputIndented: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 9, padding: "10px 11px 10px 36px", color: "var(--chalk)", fontSize: 14.5, width: "100%" },
