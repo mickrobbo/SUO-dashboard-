@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.19";
+const APP_VERSION = "2026-08-14.20";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -282,6 +282,7 @@ function applyFilters(entries, filters) {
   return entries.filter((e) => {
     if (filters.openOnly && !e.repairRequired) return false;
     if (filters.truck !== "all" && e.truck !== filters.truck) return false;
+    if (filters.operator && filters.operator !== "all" && e.operator !== filters.operator) return false;
     if (filters.range !== "all") {
       const ts = e.submittedAt || new Date(e.date + "T00:00:00").getTime();
       const days = (now - ts) / 86400000;
@@ -389,37 +390,46 @@ const ICONS = {
 };
 
 /* ---------- Charts ---------- */
-function BarChart({ data, color = "var(--amber)", height = 160 }) {
+function BarChart({ data, color = "var(--amber)", height = 180, onBarClick }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   const max = Math.max(1, ...data.map((d) => d.value));
   const hasData = data.some((d) => d.value > 0);
   if (!hasData) return <div style={styles.emptyState}>No data yet.</div>;
-  const bottomPad = 34;
-  const topPad = 18;
-  const maxBarWidth = 44;
+  const bottomPad = 36;
+  const topPad = 26;
+  const maxBarWidth = 46;
   return (
-    <div style={styles.chartWrap}>
+    <div style={{ ...styles.chartWrap, maxWidth: Math.min(460, data.length * 80), margin: "0 auto" }}>
       <svg viewBox={`0 0 300 ${height}`} width="100%" height={height} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible", display: "block" }}>
         {data.map((d, i) => {
           const slot = 300 / data.length;
           const bw = Math.min(maxBarWidth, slot - 14);
           const x = i * slot + (slot - bw) / 2;
-          const barH = (d.value / max) * (height - bottomPad - topPad);
+          const isZero = d.value <= 0;
+          const barH = isZero ? 3 : (d.value / max) * (height - bottomPad - topPad);
           const active = hoverIdx === i;
           const labelX = x + bw / 2;
           const barY = height - bottomPad - barH;
           const words = d.label.split(" ");
+          const clickable = !!onBarClick && !isZero;
           return (
-            <g key={d.label} onMouseEnter={() => setHoverIdx(i)} onMouseLeave={() => setHoverIdx(null)} onClick={() => setHoverIdx(active ? null : i)} style={{ cursor: "pointer" }}>
-              <rect x={x} y={barY} width={bw} height={Math.max(barH, 1.5)} rx={4} fill={active ? "var(--amber-light)" : color} opacity={active ? 1 : 0.85} />
-              <text x={labelX} y={height - bottomPad + 13} fontSize="8" fill="var(--muted)" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                {words.map((w, wi) => <tspan key={wi} x={labelX} dy={wi === 0 ? 0 : 10}>{w}</tspan>)}
+            <g
+              key={d.label}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+              onClick={() => (clickable ? onBarClick(d) : setHoverIdx(active ? null : i))}
+              style={{ cursor: "pointer" }}
+            >
+              <rect x={x} y={barY} width={bw} height={barH} rx={4} fill={isZero ? "var(--panel-3)" : active ? "var(--amber-light)" : color} opacity={isZero ? 1 : active ? 1 : 0.85} />
+              <text x={labelX} y={barY - 8} fontSize="10.5" fontWeight="700" fill={isZero ? "var(--muted)" : "var(--chalk)"} textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">{d.value}</text>
+              <text x={labelX} y={height - bottomPad + 14} fontSize="9.5" fill="var(--muted)" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                {words.map((w, wi) => <tspan key={wi} x={labelX} dy={wi === 0 ? 0 : 11}>{w}</tspan>)}
               </text>
-              {active && <text x={labelX} y={barY - 6} fontSize="10" fontWeight="700" fill="var(--chalk)" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">{d.value}</text>}
             </g>
           );
         })}
       </svg>
+      {onBarClick && <div style={styles.chartHint}>Tap a bar to view that operator's history</div>}
     </div>
   );
 }
@@ -857,6 +867,8 @@ function App() {
     });
   };
   const [bugModalOpen, setBugModalOpen] = useState(false);
+  const [historyOperatorFilter, setHistoryOperatorFilter] = useState(null);
+  const viewOperatorHistory = (name) => { setHistoryOperatorFilter(name); setTab("history"); };
   const [authChecked, setAuthChecked] = useState(false);
   const [profile, setProfile] = useState(null);
   const [tab, setTab] = useState("dashboard");
@@ -1046,6 +1058,7 @@ function App() {
         { header: "Car", key: "car", width: 9 },
         { header: "Service Type", key: "serviceType", width: 13 },
         { header: "Repair Required", key: "repairRequired", width: 15 },
+        { header: "Fault Status", key: "faultStatus", width: 13 },
         { header: "Fault Code", key: "faultCode", width: 32 },
         { header: "Fault Flags", key: "faultFlags", width: 34 },
         { header: "Pumped & Locked", key: "pumpedLocked", width: 15 },
@@ -1056,10 +1069,20 @@ function App() {
       ];
       logs.forEach((l) => wsLog.addRow({
         date: l.date, time: l.time, truck: l.truck, operator: l.operator, trainType: l.trainType, fleetNo: l.fleetNo, car: l.car,
-        serviceType: l.serviceType, repairRequired: l.repairRequired ? "Yes" : "No", faultCode: faultCodeLabel(l.faultCode), faultFlags: (l.faultFlags || []).join(", "),
+        serviceType: l.serviceType, repairRequired: l.repairRequired ? "Yes" : "No",
+        faultStatus: l.repairRequired ? (l.resolved ? "Rectified" : "Open") : "—",
+        faultCode: faultCodeLabel(l.faultCode), faultFlags: (l.faultFlags || []).join(", "),
         pumpedLocked: l.pumpedLocked ? "Yes" : "No", deferred72h: l.deferred72h ? "Yes" : "No", hasPhoto: l.photo ? "Yes" : "No", reported: l.reported ? "Yes" : "No", notes: l.notes || "",
       }));
       styleSheet(wsLog, wsLog.columns.length);
+      // Highlight rectified faults (Olive Green, Accent 3, Lighter 80%) and open faults (Red, Accent 2, Lighter 80%)
+      const RECTIFIED_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEAF1DD" } };
+      const OPEN_FAULT_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2DCDB" } };
+      logs.forEach((l, i) => {
+        if (!l.repairRequired) return;
+        const row = wsLog.getRow(i + 2);
+        row.eachCell((cell) => { cell.fill = l.resolved ? RECTIFIED_FILL : OPEN_FAULT_FILL; });
+      });
 
       const wsInsp = wb.addWorksheet("Daily Inspections");
       wsInsp.columns = [
@@ -1194,11 +1217,11 @@ function App() {
       </nav>
 
       <main className="app-wrap" style={styles.main}>
-        {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} onResolveFault={resolveFault} showToast={showToast} />}
+        {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} onResolveFault={resolveFault} showToast={showToast} onViewOperatorHistory={viewOperatorHistory} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} latestInspection={latestInspection} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
-        {tab === "history" && <History logs={logs} inspections={inspections} onDeleteLog={deleteLog} onDeleteInspection={deleteInspection} onEditLog={startEditLog} onExport={exportExcel} onClearAll={clearAllData} trucks={trucks} isAdmin={isAdmin} />}
+        {tab === "history" && <History logs={logs} inspections={inspections} onDeleteLog={deleteLog} onDeleteInspection={deleteInspection} onEditLog={startEditLog} onExport={exportExcel} onClearAll={clearAllData} trucks={trucks} isAdmin={isAdmin} initialOperatorFilter={historyOperatorFilter} />}
       </main>
 
       {toast && <div style={styles.toast}>{toast}</div>}
@@ -1332,7 +1355,7 @@ function ResolveFaultInline({ entry, onResolve }) {
   );
 }
 
-function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFault, showToast }) {
+function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFault, showToast, onViewOperatorHistory }) {
   const [period, setPeriod] = useState("all"); // "7d" | "30d" | "all"
   const periodLogs = useMemo(() => {
     if (period === "all") return logs;
@@ -1379,7 +1402,12 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
-      .map(([name, value]) => ({ label: name.split(" ")[0].slice(0, 10), value }));
+      .map(([name, value]) => ({ label: name.split(" ")[0].slice(0, 10), fullLabel: name, value }));
+  }, [periodLogs]);
+
+  const faultSplit = useMemo(() => {
+    const faulted = periodLogs.filter((l) => l.repairRequired).length;
+    return { faulted, clean: periodLogs.length - faulted };
   }, [periodLogs]);
 
   const allOpenFaults = useMemo(() => {
@@ -1430,6 +1458,10 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
       .filter(([, entries]) => entries.length >= 2)
       .map(([car, entries]) => ({ car, entries: entries.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)) }))
       .sort((a, b) => b.entries.length - a.entries.length);
+  }, [logs]);
+
+  const adhocRecent = useMemo(() => {
+    return [...logs].filter((l) => l.serviceType === "Ad-hoc").sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)).slice(0, 20);
   }, [logs]);
 
   const resolvedFaults = useMemo(() => {
@@ -1615,6 +1647,28 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
         </div>
       )}
 
+      <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".105s" }}>
+        <div className="panel-title" style={styles.panelTitle}>Ad-hoc Servicing{adhocRecent.length > 0 ? ` (${adhocRecent.length})` : ""}</div>
+        {adhocRecent.length === 0 ? (
+          <div style={styles.emptyState}>No ad-hoc services logged yet.</div>
+        ) : (
+          <div className={adhocRecent.length > 3 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(adhocRecent.length > 3 ? styles.scrollCap : {}) }}>
+            {adhocRecent.map((entry) => (
+              <div key={entry.id} className="snapshot-card" style={{ ...styles.snapshotCard, border: "1px solid var(--panel-3)" }}>
+                <div style={styles.snapshotTop}>
+                  <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                  {entry.repairRequired && <span style={{ ...styles.ageBadge, color: entry.resolved ? "var(--ok)" : "var(--danger)", background: entry.resolved ? "rgba(63,185,138,0.14)" : "rgba(229,72,77,0.14)" }}>{entry.resolved ? "Resolved" : "Fault open"}</span>}
+                </div>
+                <div style={styles.snapshotSubRow}>
+                  <span style={styles.snapshotDate}>{fmtDate(entry.date)} {entry.time}</span>
+                </div>
+                <div style={styles.snapshotMeta}>{entry.truck} · {entry.operator || "unassigned"}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".11s" }}>
         <div className="panel-title" style={styles.panelTitle}>Resolved Faults{resolvedFaults.length > 0 ? ` (${resolvedFaults.length})` : ""}</div>
         {resolvedFaults.length === 0 ? (
@@ -1625,10 +1679,10 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
               <div key={entry.id} className="snapshot-card" style={{ ...styles.snapshotCard, border: "1px solid rgba(63,185,138,0.3)" }}>
                 <div style={styles.snapshotTop}>
                   <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                  <span style={styles.rectifiedPill}><Icon path={ICONS.check} size={11} style={{ marginRight: 4 }} />Rectified</span>
                 </div>
                 <div style={styles.snapshotSubRow}>
                   <span style={styles.snapshotDate}>Resolved {entry.resolvedAt ? new Date(entry.resolvedAt).toLocaleDateString("en-AU") : "—"}{entry.resolvedBy ? ` by ${entry.resolvedBy}` : ""}</span>
-                  <span style={{ ...styles.ageBadge, color: "var(--ok)", background: "rgba(63,185,138,0.14)" }}>{entry.hoursOpen < 24 ? `${entry.hoursOpen}h to fix` : `${Math.round(entry.hoursOpen / 24)}d to fix`}</span>
                 </div>
                 <div style={{ fontSize: 13, color: "var(--chalk)", fontWeight: 600, marginTop: 8 }}>{faultSummary(entry)}</div>
                 {entry.resolutionNotes && <div style={styles.snapshotMeta}>{entry.resolutionNotes}</div>}
@@ -1651,13 +1705,13 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
         </div>
         <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".16s" }}>
           <div className="panel-title" style={styles.panelTitle}>Services by Operator</div>
-          <BarChart data={operatorTally} color="var(--amber)" />
+          <BarChart data={operatorTally} color="var(--amber)" onBarClick={(d) => onViewOperatorHistory && onViewOperatorHistory(d.fullLabel)} />
         </div>
       </div>
 
       <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".13s" }}>
         <div className="panel-title" style={styles.panelTitle}>Servicing Patterns</div>
-        <div className="desktop-2col">
+        <div className="desktop-3col">
           <div>
             <div style={styles.subPanelLabel}>AM / PM split</div>
             <DonutStat a={amPm.am} b={amPm.pm} labelA="AM (before 12pm)" labelB="PM (12pm+)" colorA="var(--amber)" colorB="var(--ok)" />
@@ -1665,6 +1719,10 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
           <div>
             <div style={styles.subPanelLabel}>Planned vs ad-hoc</div>
             <DonutStat a={planned} b={adhoc} labelA="Planned" labelB="Ad-hoc" />
+          </div>
+          <div>
+            <div style={styles.subPanelLabel}>Fault vs clean</div>
+            <DonutStat a={faultSplit.faulted} b={faultSplit.clean} labelA="Fault reported" labelB="No fault" colorA="var(--danger)" colorB="var(--ok)" />
           </div>
         </div>
       </div>
@@ -1891,9 +1949,9 @@ function ServiceForm({ trucks, fleet, editingEntry, onSubmit, onCancelEdit }) {
   );
 }
 
-function History({ logs, inspections, onDeleteLog, onDeleteInspection, onEditLog, onExport, onClearAll, trucks, isAdmin }) {
+function History({ logs, inspections, onDeleteLog, onDeleteInspection, onEditLog, onExport, onClearAll, trucks, isAdmin, initialOperatorFilter }) {
   const [view, setView] = useState("logs");
-  const [filters, setFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all" });
+  const [filters, setFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all", operator: initialOperatorFilter || "all" });
   const filteredLogs = useMemo(() => applyFilters(logs, filters), [logs, filters]);
   const filteredInspections = useMemo(() => applyFilters(inspections, { ...filters, fault: "all" }), [inspections, filters]);
   return (
@@ -1905,6 +1963,14 @@ function History({ logs, inspections, onDeleteLog, onDeleteInspection, onEditLog
         </div>
         <button style={styles.exportBtn} onClick={onExport}><Icon path={ICONS.download} size={14} style={{ marginRight: 6 }} />Export Excel</button>
       </div>
+
+      {filters.operator && filters.operator !== "all" && (
+        <div style={styles.readOnlyNote}>
+          <Icon path={ICONS.user} size={12} style={{ marginRight: 6, flexShrink: 0 }} />
+          Filtered by operator: <b style={{ margin: "0 6px" }}>{filters.operator}</b>
+          <button type="button" style={styles.clearFilterBtn} onClick={() => setFilters((p) => ({ ...p, operator: "all" }))}>Clear</button>
+        </div>
+      )}
 
       {!isAdmin && <div style={styles.readOnlyNote}><Icon path={ICONS.lock} size={12} style={{ marginRight: 6, flexShrink: 0 }} />View only — editing and deleting entries is restricted to admins.</div>}
 
@@ -2069,6 +2135,8 @@ const styles = {
   cancelEditBtn: { background: "none", border: "1px solid var(--amber-dim)", borderRadius: 7, color: "var(--amber-light)", fontSize: 11.5, fontWeight: 700, padding: "4px 9px", cursor: "pointer" },
   dangerBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", background: "none", border: "1px solid rgba(229,72,77,0.35)", borderRadius: 9, padding: "10px 14px", color: "var(--danger)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", marginTop: 22 },
   readOnlyNote: { display: "flex", alignItems: "center", fontSize: 11.5, color: "var(--muted)", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 9, padding: "9px 12px", marginBottom: 14 },
+  clearFilterBtn: { marginLeft: "auto", background: "none", border: "1px solid var(--panel-3)", borderRadius: 6, padding: "3px 10px", color: "var(--amber-light)", fontSize: 11, fontWeight: 700, cursor: "pointer" },
+  chartHint: { textAlign: "center", fontSize: 10.5, color: "var(--muted)", marginTop: 4 },
   toast: { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "linear-gradient(155deg, var(--amber-light), var(--amber))", color: "#0E1A16", padding: "10px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700, boxShadow: "0 10px 28px rgba(0,0,0,.4)" },
   updateBanner: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", gap: 14, background: "var(--panel-2)", borderTop: "1px solid var(--amber-dim)", padding: "12px 16px", fontSize: 12.5, color: "var(--chalk)", fontWeight: 600 },
   updateReloadBtn: { background: "var(--amber)", border: "none", borderRadius: 8, padding: "6px 14px", color: "#0E1A16", fontSize: 12, fontWeight: 700, cursor: "pointer" },
@@ -2083,7 +2151,7 @@ const styles = {
   allClear: { display: "flex", alignItems: "center", fontSize: 13.5, color: "var(--ok)", fontWeight: 600, padding: "6px 2px" },
   snapshotCard: { background: "var(--panel)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 10, padding: "12px 14px" },
   scrollCap: { maxHeight: 322, overflowY: "auto", paddingRight: 6 },
-  snapshotTop: { display: "flex", alignItems: "flex-start", flexWrap: "wrap" },
+  snapshotTop: { display: "flex", alignItems: "flex-start", flexWrap: "wrap", justifyContent: "space-between", gap: 8 },
   snapshotTruck: { display: "flex", alignItems: "center", fontSize: 14, fontWeight: 700, color: "var(--chalk)", lineHeight: 1.35, flexWrap: "wrap" },
   snapshotSubRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 },
   snapshotDate: { fontSize: 11.5, color: "var(--muted)" },
@@ -2094,11 +2162,12 @@ const styles = {
   faultCauseList: { fontSize: 12.5, color: "var(--chalk)", margin: "4px 0 0", paddingLeft: 18, lineHeight: 1.6 },
   resolveBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", background: "rgba(63,185,138,0.1)", border: "1px solid rgba(63,185,138,0.3)", borderRadius: 8, padding: "9px 12px", color: "var(--ok)", fontSize: 12, fontWeight: 700, cursor: "pointer", marginTop: 10 },
   resolvedBanner: { marginTop: 10, background: "rgba(63,185,138,0.1)", border: "1px solid rgba(63,185,138,0.3)", borderRadius: 8, padding: "9px 12px", fontSize: 11.5, color: "var(--ok)", display: "flex", flexWrap: "wrap", alignItems: "flex-start" },
+  rectifiedPill: { display: "inline-flex", alignItems: "center", background: "rgba(63,185,138,0.16)", border: "1px solid rgba(63,185,138,0.35)", borderRadius: 20, padding: "3px 10px", fontSize: 10.5, fontWeight: 700, color: "var(--ok)" },
   snapshotMeta: { fontSize: 12, color: "var(--muted)", marginTop: 4, display: "flex", alignItems: "center", flexWrap: "wrap" },
   repeatCountBadge: { fontSize: 11, fontWeight: 700, color: "var(--danger)", background: "rgba(229,72,77,0.14)", padding: "3px 9px", borderRadius: 20 },
   panelTitle: { fontSize: 13, fontWeight: 700, color: "var(--amber-light)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 16 },
   panelTitleRow: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 },
-  subPanelLabel: { fontSize: 10.5, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 10 },
+  subPanelLabel: { fontSize: 12, fontWeight: 700, color: "var(--amber-light)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 12 },
   liveTag: { display: "flex", alignItems: "center", fontSize: 10, fontWeight: 700, color: "var(--ok)", background: "rgba(63,185,138,0.12)", padding: "3px 9px", borderRadius: 20, textTransform: "uppercase", letterSpacing: "0.03em" },
   chartWrap: { width: "100%" },
   chartLegend: { display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" },
@@ -2127,6 +2196,7 @@ const styles = {
 const responsiveCss = `
   @media (min-width: 820px) {
     .desktop-2col { display: grid !important; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .desktop-3col { display: grid !important; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
     .dash-panel { padding: 18px !important; }
   }
   @media (min-width: 1024px) {
@@ -2135,7 +2205,7 @@ const responsiveCss = `
     .stat-value { font-size: 30px !important; }
   }
   .force-mobile .app-wrap { max-width: 420px !important; }
-  .force-mobile .desktop-2col { display: flex !important; flex-direction: column !important; gap: 14px !important; }
+  .force-mobile .desktop-2col, .force-mobile .desktop-3col { display: flex !important; flex-direction: column !important; gap: 14px !important; }
   .force-mobile .stat-value { font-size: 22px !important; }
   .force-mobile .dash-panel { padding: 16px !important; }
 `;
