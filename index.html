@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.20";
+const APP_VERSION = "2026-08-14.22";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -399,7 +399,7 @@ function BarChart({ data, color = "var(--amber)", height = 180, onBarClick }) {
   const topPad = 26;
   const maxBarWidth = 46;
   return (
-    <div style={{ ...styles.chartWrap, maxWidth: Math.min(460, data.length * 80), margin: "0 auto" }}>
+    <div style={{ ...styles.chartWrap, maxWidth: 460, margin: "0 auto" }}>
       <svg viewBox={`0 0 300 ${height}`} width="100%" height={height} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible", display: "block" }}>
         {data.map((d, i) => {
           const slot = 300 / data.length;
@@ -421,8 +421,8 @@ function BarChart({ data, color = "var(--amber)", height = 180, onBarClick }) {
               style={{ cursor: "pointer" }}
             >
               <rect x={x} y={barY} width={bw} height={barH} rx={4} fill={isZero ? "var(--panel-3)" : active ? "var(--amber-light)" : color} opacity={isZero ? 1 : active ? 1 : 0.85} />
-              <text x={labelX} y={barY - 8} fontSize="10.5" fontWeight="700" fill={isZero ? "var(--muted)" : "var(--chalk)"} textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">{d.value}</text>
-              <text x={labelX} y={height - bottomPad + 14} fontSize="9.5" fill="var(--muted)" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+              <text x={labelX} y={barY - 8} fontSize="12" fontWeight="700" fill={isZero ? "var(--muted)" : "var(--chalk)"} textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">{d.value}</text>
+              <text x={labelX} y={height - bottomPad + 14} fontSize="10.5" fill="var(--muted)" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
                 {words.map((w, wi) => <tspan key={wi} x={labelX} dy={wi === 0 ? 0 : 11}>{w}</tspan>)}
               </text>
             </g>
@@ -867,6 +867,7 @@ function App() {
     });
   };
   const [bugModalOpen, setBugModalOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [historyOperatorFilter, setHistoryOperatorFilter] = useState(null);
   const viewOperatorHistory = (name) => { setHistoryOperatorFilter(name); setTab("history"); };
   const [authChecked, setAuthChecked] = useState(false);
@@ -1169,6 +1170,10 @@ function App() {
 
   const isAdmin = profile.isAdmin === true;
 
+  if (reportOpen) {
+    return <FortnightlyReport logs={logs} inspections={inspections} trucks={trucks} onClose={() => setReportOpen(false)} />;
+  }
+
   return (
     <div className={forceMobile ? "force-mobile" : ""} style={styles.app}>
       {flashEntry && (
@@ -1199,6 +1204,7 @@ function App() {
           <button style={styles.viewToggleBtn} onClick={toggleSound} title={soundEnabled ? "Mute repair alert sound" : "Unmute repair alert sound"}>
             <Icon path={soundEnabled ? ICONS.speaker : ICONS.speakerOff} size={14} />
           </button>
+          <button style={styles.bugPillBtn} onClick={() => setReportOpen(true)} title="Generate fortnightly summary"><Icon path={ICONS.download} size={13} style={{ marginRight: 6 }} />Fortnightly report</button>
           <button style={styles.bugPillBtn} onClick={() => setBugModalOpen(true)} title="Report a bug"><Icon path={ICONS.bug} size={13} style={{ marginRight: 6 }} />Report bug</button>
           <button style={styles.refreshBtn} onClick={handleSignOut} title="Sign out"><Icon path={ICONS.logout} size={15} color="var(--muted)" /></button>
         </div>
@@ -1207,6 +1213,7 @@ function App() {
       <nav className="app-wrap" style={styles.tabBar}>
         {[
           { id: "dashboard", label: "Dashboard", icon: ICONS.chart },
+          { id: "queue", label: "Action Required", icon: ICONS.alert },
           { id: "status", label: "Truck Status", icon: ICONS.gauge },
           { id: "log", label: "Log service", icon: ICONS.gauge },
           ...(isAdmin ? [{ id: "admin", label: "Admin", icon: ICONS.shield }] : []),
@@ -1218,6 +1225,7 @@ function App() {
 
       <main className="app-wrap" style={styles.main}>
         {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} onResolveFault={resolveFault} showToast={showToast} onViewOperatorHistory={viewOperatorHistory} />}
+        {tab === "queue" && <ActionQueue logs={logs} inspections={inspections} onResolve={resolveFault} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} latestInspection={latestInspection} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
@@ -1232,6 +1240,252 @@ function App() {
           <button style={styles.updateReloadBtn} onClick={() => window.location.reload()}>Reload</button>
         </div>
       )}
+    </div>
+  );
+}
+
+function FortnightlyReport({ logs, inspections, trucks, onClose }) {
+  const now = Date.now();
+  const windowMs = 14 * 86400000;
+  const since = (arr) => arr.filter((x) => now - (x.submittedAt || 0) <= windowMs);
+
+  const openFaults = logs.filter((l) => l.repairRequired && !l.resolved).sort((a, b) => (a.submittedAt || 0) - (b.submittedAt || 0));
+  const recentLogs = since(logs);
+  const workloadByTruck = trucks.map((t) => ({ label: t, count: recentLogs.filter((l) => l.truck === t).length }));
+  const operatorCounts = {};
+  recentLogs.forEach((l) => { const n = l.operator || "Unassigned"; operatorCounts[n] = (operatorCounts[n] || 0) + 1; });
+  const workloadByOperator = Object.entries(operatorCounts).sort((a, b) => b[1] - a[1]);
+  const newChangeOuts = recentLogs.filter((l) => l.repairRequired && (l.faultFlags || []).includes("Requires change out"));
+  const activeDeferments = logs.filter((l) => l.repairRequired && !l.resolved && l.deferred72h).map((l) => {
+    const reportedAt = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
+    const hoursLeft = Math.round((reportedAt + 72 * 3600000 - now) / 3600000);
+    return { ...l, hoursLeft };
+  }).sort((a, b) => a.hoursLeft - b.hoursLeft);
+  const inspectionFailures = since(inspections).filter((i) => i.repairRequired || Object.values(i.checklist || {}).includes("Fail"));
+
+  const genDate = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <div style={styles.reportPage}>
+      <style>{`@media print { .no-print { display: none !important; } body { background: #fff !important; } }`}</style>
+      <div className="no-print" style={styles.reportToolbar}>
+        <button style={styles.refreshBtn} onClick={onClose}><Icon path={ICONS.x} size={15} color="var(--muted)" /></button>
+        <span style={{ fontWeight: 700, color: "var(--chalk)" }}>Fortnightly Summary — Preview</span>
+        <button style={{ ...styles.submitBtn, width: "auto", padding: "9px 16px", marginTop: 0 }} onClick={() => window.print()}><Icon path={ICONS.download} size={14} style={{ marginRight: 6 }} />Print / Save as PDF</button>
+      </div>
+
+      <div style={styles.reportSheet}>
+        <div style={styles.reportHeader}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>Southern Cross Station</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#555" }}>Toilet Truck Servicing — Fortnightly Summary</div>
+          <div style={{ fontSize: 11.5, color: "#888", marginTop: 4 }}>Covering the 14 days to {genDate} · Generated {genDate}</div>
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>Open Faults Summary ({openFaults.length})</div>
+          {openFaults.length === 0 ? <div style={styles.reportEmpty}>No open faults.</div> : (
+            <table style={styles.reportTable}>
+              <thead><tr><th style={styles.reportTh}>Date</th><th style={styles.reportTh}>Unit</th><th style={styles.reportTh}>Truck</th><th style={styles.reportTh}>Fault</th></tr></thead>
+              <tbody>{openFaults.map((l) => (
+                <tr key={l.id}><td style={styles.reportTd}>{fmtDate(l.date)}</td><td style={styles.reportTd}>{l.trainType} {l.fleetNo}{l.car ? ` / ${l.car}` : ""}</td><td style={styles.reportTd}>{l.truck}</td><td style={styles.reportTd}>{faultSummary(l)}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>Workload by Truck (last 14 days)</div>
+          <table style={styles.reportTable}>
+            <thead><tr><th style={styles.reportTh}>Truck</th><th style={styles.reportTh}>Services</th></tr></thead>
+            <tbody>{workloadByTruck.map((w) => (<tr key={w.label}><td style={styles.reportTd}>{w.label}</td><td style={styles.reportTd}>{w.count}</td></tr>))}</tbody>
+          </table>
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>Workload by Operator (last 14 days)</div>
+          <table style={styles.reportTable}>
+            <thead><tr><th style={styles.reportTh}>Operator</th><th style={styles.reportTh}>Services</th></tr></thead>
+            <tbody>{workloadByOperator.map(([name, count]) => (<tr key={name}><td style={styles.reportTd}>{name}</td><td style={styles.reportTd}>{count}</td></tr>))}</tbody>
+          </table>
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>New Change-Outs (last 14 days) — {newChangeOuts.length}</div>
+          {newChangeOuts.length === 0 ? <div style={styles.reportEmpty}>None recorded.</div> : (
+            <table style={styles.reportTable}>
+              <thead><tr><th style={styles.reportTh}>Date</th><th style={styles.reportTh}>Unit</th><th style={styles.reportTh}>Status</th></tr></thead>
+              <tbody>{newChangeOuts.map((l) => (<tr key={l.id}><td style={styles.reportTd}>{fmtDate(l.date)}</td><td style={styles.reportTd}>{l.trainType} {l.fleetNo}{l.car ? ` / ${l.car}` : ""}</td><td style={styles.reportTd}>{l.resolved ? "Rectified" : "Open"}</td></tr>))}</tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>Deferments Expiring — {activeDeferments.length}</div>
+          {activeDeferments.length === 0 ? <div style={styles.reportEmpty}>No active deferments.</div> : (
+            <table style={styles.reportTable}>
+              <thead><tr><th style={styles.reportTh}>Unit</th><th style={styles.reportTh}>Truck</th><th style={styles.reportTh}>Status</th></tr></thead>
+              <tbody>{activeDeferments.map((l) => (<tr key={l.id}><td style={styles.reportTd}>{l.trainType} {l.fleetNo}{l.car ? ` / ${l.car}` : ""}</td><td style={styles.reportTd}>{l.truck}</td><td style={styles.reportTd}>{l.hoursLeft <= 0 ? `Expired ${Math.abs(l.hoursLeft)}h ago` : `${l.hoursLeft}h left`}</td></tr>))}</tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={styles.reportSection}>
+          <div style={styles.reportSectionTitle}>Inspection Failures (last 14 days) — {inspectionFailures.length}</div>
+          {inspectionFailures.length === 0 ? <div style={styles.reportEmpty}>No inspection failures.</div> : (
+            <table style={styles.reportTable}>
+              <thead><tr><th style={styles.reportTh}>Date</th><th style={styles.reportTh}>Truck</th><th style={styles.reportTh}>Issue</th></tr></thead>
+              <tbody>{inspectionFailures.map((i) => {
+                const fails = Object.entries(i.checklist || {}).filter(([, v]) => v === "Fail").map(([k]) => k);
+                return <tr key={i.id}><td style={styles.reportTd}>{fmtDate(i.date)}</td><td style={styles.reportTd}>{i.truck}</td><td style={styles.reportTd}>{fails.length ? fails.join(", ") : (i.faultText || "Fault reported")}</td></tr>;
+              })}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionQueue({ logs, inspections, onResolve }) {
+  const now = Date.now();
+  const dayMs = 86400000;
+
+  const changeOuts = useMemo(() => {
+    return logs
+      .filter((l) => l.repairRequired && !l.resolved && (l.faultFlags || []).includes("Requires change out"))
+      .sort((a, b) => (a.submittedAt || 0) - (b.submittedAt || 0)); // oldest first = most urgent
+  }, [logs]);
+
+  const deferments = useMemo(() => {
+    return logs
+      .filter((l) => l.repairRequired && !l.resolved && l.deferred72h)
+      .map((l) => {
+        const reportedAt = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
+        const expiresAt = reportedAt + 72 * 3600000;
+        const hoursLeft = Math.round((expiresAt - now) / 3600000);
+        return { ...l, expiresAt, hoursLeft, expired: hoursLeft <= 0 };
+      })
+      .sort((a, b) => a.hoursLeft - b.hoursLeft); // soonest-expiring first
+  }, [logs, now]);
+
+  const repeatUnits = useMemo(() => {
+    const windowMs = 14 * dayMs;
+    const byCar = {};
+    logs.forEach((l) => {
+      if (!l.repairRequired || !l.car) return;
+      if (now - (l.submittedAt || 0) > windowMs) return;
+      if (!byCar[l.car]) byCar[l.car] = [];
+      byCar[l.car].push(l);
+    });
+    return Object.entries(byCar)
+      .filter(([, entries]) => entries.length >= 2)
+      .map(([car, entries]) => ({ car, entries: entries.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)) }))
+      .sort((a, b) => b.entries.length - a.entries.length);
+  }, [logs, now]);
+
+  const failedInspections = useMemo(() => {
+    return inspections
+      .filter((i) => i.repairRequired || Object.values(i.checklist || {}).includes("Fail"))
+      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))
+      .slice(0, 10);
+  }, [inspections]);
+
+  const totalCount = changeOuts.length + deferments.filter((d) => d.hoursLeft <= 24).length + repeatUnits.length + failedInspections.length;
+
+  return (
+    <div>
+      <div className="rise dash-panel" style={{ ...styles.panel, ...(totalCount > 0 ? styles.panelAlert : {}) }}>
+        <div style={{ ...styles.heroTitle, color: totalCount > 0 ? "var(--danger)" : "var(--ok)" }}>{totalCount === 0 ? "Nothing urgent right now" : `${totalCount} item${totalCount === 1 ? "" : "s"} need supervisor attention`}</div>
+        <div style={styles.heroSub}>Open change-outs, deferments nearing expiry, repeat-fault units, and failed inspections — sorted by urgency.</div>
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Open Change-Outs{changeOuts.length > 0 ? ` (${changeOuts.length})` : ""}</div>
+        {changeOuts.length === 0 ? (
+          <div style={styles.allClear}><Icon path={ICONS.check} size={16} color="var(--ok)" style={{ marginRight: 8 }} />No open change-outs</div>
+        ) : (
+          <div className={changeOuts.length > 4 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(changeOuts.length > 4 ? styles.scrollCap : {}) }}>
+            {changeOuts.map((entry) => {
+              const ageDaysN = Math.floor((now - (entry.submittedAt || 0)) / dayMs);
+              return (
+                <div key={entry.id} style={styles.snapshotCard}>
+                  <div style={styles.snapshotTop}>
+                    <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                    <span style={{ ...styles.ageBadge, color: ageDaysN >= 2 ? "var(--danger)" : "var(--amber-light)", background: ageDaysN >= 2 ? "rgba(229,72,77,0.14)" : "rgba(245,166,35,0.14)" }}>{ageDaysN === 0 ? "Today" : `${ageDaysN}d open`}</span>
+                  </div>
+                  <div style={styles.snapshotMeta}>{fmtDate(entry.date)} · {entry.truck} · {entry.operator}</div>
+                  <ResolveFaultInline entry={entry} onResolve={onResolve} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Deferments Nearing Expiry{deferments.length > 0 ? ` (${deferments.length})` : ""}</div>
+        {deferments.length === 0 ? (
+          <div style={styles.allClear}><Icon path={ICONS.check} size={16} color="var(--ok)" style={{ marginRight: 8 }} />No active 72hr deferments</div>
+        ) : (
+          <div className={deferments.length > 4 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(deferments.length > 4 ? styles.scrollCap : {}) }}>
+            {deferments.map((entry) => (
+              <div key={entry.id} style={styles.snapshotCard}>
+                <div style={styles.snapshotTop}>
+                  <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                  <span style={{ ...styles.ageBadge, color: entry.expired ? "var(--danger)" : entry.hoursLeft <= 12 ? "var(--amber-light)" : "var(--ok)", background: entry.expired ? "rgba(229,72,77,0.14)" : "rgba(245,166,35,0.14)" }}>
+                    {entry.expired ? `Expired ${Math.abs(entry.hoursLeft)}h ago` : `${entry.hoursLeft}h left`}
+                  </span>
+                </div>
+                <div style={styles.snapshotMeta}>{fmtDate(entry.date)} · {entry.truck} · {entry.operator}</div>
+                <ResolveFaultInline entry={entry} onResolve={onResolve} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Repeat-Fault Units (14 days){repeatUnits.length > 0 ? ` (${repeatUnits.length})` : ""}</div>
+        {repeatUnits.length === 0 ? (
+          <div style={styles.allClear}><Icon path={ICONS.check} size={16} color="var(--ok)" style={{ marginRight: 8 }} />No repeat-fault units</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {repeatUnits.map(({ car, entries }) => (
+              <div key={car} style={styles.snapshotCard}>
+                <div style={{ ...styles.snapshotTop, justifyContent: "space-between" }}>
+                  <span style={styles.snapshotTruck}><Icon path={ICONS.alert} size={14} color="var(--danger)" style={{ marginRight: 6 }} />Car {car}</span>
+                  <span style={styles.repeatCountBadge}>{entries.length}× in 14 days</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                  {entries.map((e) => <div key={e.id} style={styles.snapshotMeta}>{fmtDate(e.date)} — {e.trainType} {e.fleetNo} · {faultSummary(e)}</div>)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Failed Inspections{failedInspections.length > 0 ? ` (${failedInspections.length})` : ""}</div>
+        {failedInspections.length === 0 ? (
+          <div style={styles.allClear}><Icon path={ICONS.check} size={16} color="var(--ok)" style={{ marginRight: 8 }} />No failed inspection items recently</div>
+        ) : (
+          <div className={failedInspections.length > 4 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(failedInspections.length > 4 ? styles.scrollCap : {}) }}>
+            {failedInspections.map((i) => {
+              const fails = Object.entries(i.checklist || {}).filter(([, v]) => v === "Fail");
+              return (
+                <div key={i.id} style={styles.snapshotCard}>
+                  <div style={styles.snapshotTop}>
+                    <span style={styles.snapshotTruck}>{i.truck}</span>
+                  </div>
+                  <div style={styles.snapshotMeta}>{fmtDate(i.date)} · {i.operator}</div>
+                  <div style={{ ...styles.snapshotFault, marginTop: 6 }}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5 }} />{fails.length > 0 ? `Failed: ${fails.map(([k]) => k).join(", ")}` : (i.faultText || "Fault reported")}<PhotoLink photo={i.photo} /></div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1380,6 +1634,7 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
   const [snapshotFilters, setSnapshotFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all" });
   const [expandedFault, setExpandedFault] = useState(null);
   const [reportFaultOpen, setReportFaultOpen] = useState(false);
+  const [unitDeepDive, setUnitDeepDive] = useState(null);
   const [faultView, setFaultView] = useState("code");
 
   const todayStr = todayISO();
@@ -1476,6 +1731,19 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
       .sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0));
   }, [logs]);
 
+  const kpis = useMemo(() => {
+    const dayMs = 86400000;
+    const now = Date.now();
+    const mttrHours = resolvedFaults.length ? Math.round(resolvedFaults.reduce((s, f) => s + f.hoursOpen, 0) / resolvedFaults.length) : null;
+    const cleanPct = logs.length ? Math.round(((logs.length - logs.filter((l) => l.repairRequired).length) / logs.length) * 100) : null;
+    const todayCount = logs.filter((l) => l.date === todayStr).length;
+    const weekCount = logs.filter((l) => now - (l.submittedAt || 0) <= 7 * dayMs).length;
+    const openedThisWeek = logs.filter((l) => l.repairRequired && now - (l.submittedAt || 0) <= 7 * dayMs).length;
+    const openedPrevWeek = logs.filter((l) => l.repairRequired && now - (l.submittedAt || 0) > 7 * dayMs && now - (l.submittedAt || 0) <= 14 * dayMs).length;
+    const trend = openedThisWeek === openedPrevWeek ? "flat" : openedThisWeek > openedPrevWeek ? "up" : "down";
+    return { mttrHours, cleanPct, todayCount, weekCount, openedThisWeek, openedPrevWeek, trend };
+  }, [logs, todayStr]);
+
   const flagCounts = useMemo(() => {
     const counts = Object.fromEntries(FAULT_FLAGS.map((f) => [f, 0]));
     periodLogs.forEach((l) => (l.faultFlags || []).forEach((f) => { if (counts[f] !== undefined) counts[f]++; }));
@@ -1530,6 +1798,35 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
         <Icon path={ICONS.chevronDown} size={16} color={fleetHealthy ? "var(--ok)" : "var(--danger)"} style={{ transform: "rotate(-90deg)", flexShrink: 0, opacity: 0.6 }} />
       </div>
 
+      <div className="rise" style={styles.kpiStrip}>
+        <div style={styles.kpiItem}>
+          <div style={styles.kpiValue}>{kpis.mttrHours === null ? "—" : kpis.mttrHours < 24 ? `${kpis.mttrHours}h` : `${Math.round(kpis.mttrHours / 24)}d`}</div>
+          <div style={styles.kpiLabel}>Avg time to resolve</div>
+        </div>
+        <div style={styles.kpiDivider} />
+        <div style={styles.kpiItem}>
+          <div style={{ ...styles.kpiValue, color: kpis.cleanPct === null ? "var(--chalk)" : kpis.cleanPct >= 80 ? "var(--ok)" : kpis.cleanPct >= 50 ? "var(--amber-light)" : "var(--danger)" }}>
+            {kpis.cleanPct === null ? "—" : `${kpis.cleanPct}%`}
+          </div>
+          <div style={styles.kpiLabel}>Clean services (no fault)</div>
+        </div>
+        <div style={styles.kpiDivider} />
+        <div style={styles.kpiItem}>
+          <div style={styles.kpiValue}>{kpis.todayCount} <span style={styles.kpiValueSub}>today</span></div>
+          <div style={styles.kpiLabel}>{kpis.weekCount} this week</div>
+        </div>
+        <div style={styles.kpiDivider} />
+        <div style={styles.kpiItem}>
+          <div style={{ ...styles.kpiValue, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+            {kpis.openedThisWeek}
+            {kpis.trend !== "flat" && (
+              <Icon path={ICONS.chevronDown} size={13} color={kpis.trend === "up" ? "var(--danger)" : "var(--ok)"} style={{ transform: kpis.trend === "up" ? "rotate(180deg)" : "none" }} />
+            )}
+          </div>
+          <div style={styles.kpiLabel}>Faults opened this week{kpis.trend !== "flat" ? ` (${kpis.trend === "up" ? "up" : "down"} from ${kpis.openedPrevWeek})` : ""}</div>
+        </div>
+      </div>
+
       <div style={styles.workloadBanner}>
         {workload.map(({ truck, count }) => (
           <div key={truck} className="rise dash-panel" style={styles.workloadCard}>
@@ -1575,7 +1872,7 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
               return (
                 <div key={key} className="snapshot-card" style={{ ...styles.snapshotCard, cursor: "pointer" }} onClick={() => setExpandedFault(isExpanded ? null : key)}>
                   <div style={styles.snapshotTop}>
-                    <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                    <span style={{...styles.snapshotTruck, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2}} onClick={(e) => { e.stopPropagation(); setUnitDeepDive({ trainType: entry.trainType, fleetNo: entry.fleetNo }); }}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
                   </div>
                   <div style={styles.snapshotSubRow}>
                     <span style={styles.snapshotDate}>{fmtDate(entry.date)}</span>
@@ -1656,7 +1953,7 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
             {adhocRecent.map((entry) => (
               <div key={entry.id} className="snapshot-card" style={{ ...styles.snapshotCard, border: "1px solid var(--panel-3)" }}>
                 <div style={styles.snapshotTop}>
-                  <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                  <span style={{...styles.snapshotTruck, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2}} onClick={(e) => { e.stopPropagation(); setUnitDeepDive({ trainType: entry.trainType, fleetNo: entry.fleetNo }); }}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
                   {entry.repairRequired && <span style={{ ...styles.ageBadge, color: entry.resolved ? "var(--ok)" : "var(--danger)", background: entry.resolved ? "rgba(63,185,138,0.14)" : "rgba(229,72,77,0.14)" }}>{entry.resolved ? "Resolved" : "Fault open"}</span>}
                 </div>
                 <div style={styles.snapshotSubRow}>
@@ -1678,7 +1975,7 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
             {resolvedFaults.map((entry) => (
               <div key={entry.id} className="snapshot-card" style={{ ...styles.snapshotCard, border: "1px solid rgba(63,185,138,0.3)" }}>
                 <div style={styles.snapshotTop}>
-                  <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                  <span style={{...styles.snapshotTruck, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2}} onClick={(e) => { e.stopPropagation(); setUnitDeepDive({ trainType: entry.trainType, fleetNo: entry.fleetNo }); }}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
                   <span style={styles.rectifiedPill}><Icon path={ICONS.check} size={11} style={{ marginRight: 4 }} />Rectified</span>
                 </div>
                 <div style={styles.snapshotSubRow}>
@@ -1731,6 +2028,118 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
         <ReportFaultModal trucks={trucks} fleet={fleet} onClose={() => setReportFaultOpen(false)}
           onSubmit={(entry) => { onAddFault(entry); setReportFaultOpen(false); }} />
       )}
+      {unitDeepDive && (
+        <UnitDeepDiveModal trainType={unitDeepDive.trainType} fleetNo={unitDeepDive.fleetNo} logs={logs}
+          onClose={() => setUnitDeepDive(null)} onResolve={onResolveFault} />
+      )}
+    </div>
+  );
+}
+
+function UnitDeepDiveModal({ trainType, fleetNo, logs, onClose, onResolve }) {
+  const unitLogs = useMemo(() => {
+    return logs.filter((l) => l.trainType === trainType && l.fleetNo === fleetNo).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+  }, [logs, trainType, fleetNo]);
+
+  const faultEntries = unitLogs.filter((l) => l.repairRequired);
+  const resolvedOnes = faultEntries.filter((l) => l.resolved).map((l) => {
+    const reportedAt = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
+    const hours = Math.max(0, Math.round(((l.resolvedAt || reportedAt) - reportedAt) / 3600000));
+    return hours;
+  });
+  const mttr = resolvedOnes.length ? Math.round(resolvedOnes.reduce((s, h) => s + h, 0) / resolvedOnes.length) : null;
+  const openCount = faultEntries.filter((l) => !l.resolved).length;
+
+  // Repeat pattern: faults within the same rolling 7-day window
+  const repeatWindows = useMemo(() => {
+    const weekMs = 7 * 86400000;
+    let maxInWindow = 1;
+    faultEntries.forEach((a) => {
+      const count = faultEntries.filter((b) => Math.abs((a.submittedAt || 0) - (b.submittedAt || 0)) <= weekMs).length;
+      if (count > maxInWindow) maxInWindow = count;
+    });
+    return maxInWindow;
+  }, [faultEntries]);
+
+  const [expandedId, setExpandedId] = useState(null);
+
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div className="rise" style={{ ...styles.modalCard, maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <span style={styles.panelTitleText}>{trainType} {fleetNo} — Unit History</span>
+          <button type="button" style={styles.refreshBtn} onClick={onClose}><Icon path={ICONS.x} size={14} color="var(--muted)" /></button>
+        </div>
+
+        <div className="desktop-3col" style={{ marginBottom: 18 }}>
+          <div style={styles.unitStatBox}>
+            <div style={styles.kpiValue}>{mttr === null ? "—" : mttr < 24 ? `${mttr}h` : `${Math.round(mttr / 24)}d`}</div>
+            <div style={styles.kpiLabel}>Mean time to repair</div>
+          </div>
+          <div style={styles.unitStatBox}>
+            <div style={{ ...styles.kpiValue, color: openCount > 0 ? "var(--danger)" : "var(--ok)" }}>{openCount}</div>
+            <div style={styles.kpiLabel}>Currently open</div>
+          </div>
+          <div style={styles.unitStatBox}>
+            <div style={{ ...styles.kpiValue, color: repeatWindows >= 2 ? "var(--danger)" : "var(--chalk)" }}>{repeatWindows}×</div>
+            <div style={styles.kpiLabel}>Most faults in any 7-day window</div>
+          </div>
+        </div>
+
+        <div style={styles.faultDetailLabel}>Full history ({unitLogs.length} {unitLogs.length === 1 ? "entry" : "entries"})</div>
+        {unitLogs.length === 0 ? (
+          <div style={styles.emptyState}>No service history recorded for this unit yet.</div>
+        ) : (
+          <div className="scroll-cap" style={{ ...styles.scrollCap, maxHeight: 420, display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+            {unitLogs.map((entry) => {
+              const isExpanded = expandedId === entry.id;
+              const codeInfo = TOILET_FAULT_CODES.find((c) => c.code === entry.faultCode);
+              return (
+                <div key={entry.id} style={{ ...styles.snapshotCard, cursor: entry.repairRequired ? "pointer" : "default" }} onClick={() => entry.repairRequired && setExpandedId(isExpanded ? null : entry.id)}>
+                  <div style={styles.snapshotTop}>
+                    <span style={styles.snapshotDate}>{fmtDate(entry.date)} {entry.time} · {entry.truck} · {entry.operator || "unassigned"}</span>
+                    {entry.repairRequired && (
+                      <span style={entry.resolved ? styles.rectifiedPill : { ...styles.ageBadge, color: "var(--danger)", background: "rgba(229,72,77,0.14)" }}>
+                        {entry.resolved ? <React.Fragment><Icon path={ICONS.check} size={11} style={{ marginRight: 4 }} />Rectified</React.Fragment> : "Open fault"}
+                      </span>
+                    )}
+                  </div>
+                  {entry.repairRequired ? (
+                    <div style={{ ...styles.snapshotFault, marginTop: 6 }}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5, flexShrink: 0 }} />{faultSummary(entry)}<PhotoLink photo={entry.photo} /></div>
+                  ) : (
+                    <div style={styles.snapshotMeta}>{entry.serviceType} service — no fault reported</div>
+                  )}
+                  {isExpanded && entry.repairRequired && (
+                    <div style={styles.faultDetailBox}>
+                      {codeInfo && (
+                        <React.Fragment>
+                          <div style={styles.faultDetailLabel}>Description</div>
+                          <div style={styles.faultDetailText}>{codeInfo.description}</div>
+                        </React.Fragment>
+                      )}
+                      {entry.notes && (
+                        <React.Fragment>
+                          <div style={{ ...styles.faultDetailLabel, marginTop: 10 }}>Operator notes</div>
+                          <div style={styles.faultDetailText}>{entry.notes}</div>
+                        </React.Fragment>
+                      )}
+                      {entry.resolved ? (
+                        <div style={styles.resolvedBanner}>
+                          <Icon path={ICONS.check} size={13} color="var(--ok)" style={{ marginRight: 6, flexShrink: 0 }} />
+                          Resolved {entry.resolvedAt ? `on ${new Date(entry.resolvedAt).toLocaleDateString("en-AU")}` : ""}{entry.resolvedBy ? ` by ${entry.resolvedBy}` : ""}
+                          {entry.resolutionNotes && <div style={{ marginTop: 4 }}>{entry.resolutionNotes}</div>}
+                        </div>
+                      ) : (
+                        <ResolveFaultInline entry={entry} onResolve={onResolve} />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2178,6 +2587,23 @@ const styles = {
   filterChipToggle: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: "9px 11px", fontSize: 12, fontWeight: 600, color: "var(--chalk)", cursor: "pointer" },
   filterSelect: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: "9px 10px", color: "var(--chalk)", fontSize: 12, fontWeight: 600, width: "100%" },
   workloadBanner: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 },
+  kpiStrip: { display: "flex", alignItems: "stretch", background: "var(--panel-2)", border: "1px solid var(--panel-3)", borderRadius: 12, padding: "12px 4px", marginBottom: 16, overflowX: "auto" },
+  kpiItem: { flex: 1, minWidth: 130, textAlign: "center", padding: "2px 10px" },
+  kpiValue: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 700, color: "var(--chalk)" },
+  kpiValueSub: { fontSize: 11, fontWeight: 600, color: "var(--muted)" },
+  kpiLabel: { fontSize: 10.5, color: "var(--muted)", marginTop: 3, lineHeight: 1.3 },
+  kpiDivider: { width: 1, background: "var(--panel-3)", flexShrink: 0 },
+  unitStatBox: { textAlign: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 10, padding: "12px 8px" },
+  reportPage: { minHeight: "100vh", background: "#e9e9e6" },
+  reportToolbar: { position: "sticky", top: 0, zIndex: 10, display: "flex", alignItems: "center", gap: 14, background: "var(--panel-2)", borderBottom: "1px solid var(--panel-3)", padding: "12px 18px" },
+  reportSheet: { maxWidth: 800, margin: "24px auto 60px", background: "#fff", color: "#1a1a1a", padding: "40px 44px", boxShadow: "0 10px 40px rgba(0,0,0,.25)", borderRadius: 4 },
+  reportHeader: { borderBottom: "3px solid #F5A623", paddingBottom: 14, marginBottom: 22 },
+  reportSection: { marginBottom: 26 },
+  reportSectionTitle: { fontSize: 13.5, fontWeight: 800, color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.03em", borderBottom: "1px solid #ddd", paddingBottom: 6, marginBottom: 10 },
+  reportEmpty: { fontSize: 12.5, color: "#888", fontStyle: "italic" },
+  reportTable: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+  reportTh: { textAlign: "left", padding: "6px 8px", background: "#f2f2ef", color: "#555", fontWeight: 700, fontSize: 10.5, textTransform: "uppercase", borderBottom: "2px solid #ddd" },
+  reportTd: { padding: "6px 8px", borderBottom: "1px solid #eee", color: "#222" },
   workloadCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 12, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: 2 },
   workloadTruck: { fontSize: 13, fontWeight: 700, color: "var(--chalk)" },
   workloadCount: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 26, fontWeight: 700, color: "var(--amber)", lineHeight: 1.2 },
