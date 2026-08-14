@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.23";
+const APP_VERSION = "2026-08-14.24";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -1215,6 +1215,7 @@ function App() {
         {[
           { id: "dashboard", label: "Dashboard", icon: ICONS.chart },
           { id: "queue", label: "Action Required", icon: ICONS.alert },
+          { id: "pumped", label: "Pumped Status", icon: ICONS.gauge },
           { id: "status", label: "Truck Status", icon: ICONS.gauge },
           { id: "log", label: "Log service", icon: ICONS.gauge },
           ...(isAdmin ? [{ id: "admin", label: "Admin", icon: ICONS.shield }] : []),
@@ -1227,6 +1228,7 @@ function App() {
       <main className="app-wrap" style={styles.main}>
         {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} onResolveFault={resolveFault} showToast={showToast} onViewOperatorHistory={viewOperatorHistory} />}
         {tab === "queue" && <ActionQueue logs={logs} inspections={inspections} onResolve={resolveFault} />}
+        {tab === "pumped" && <PumpedStatus logs={logs} />}
         {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} latestInspection={latestInspection} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
@@ -1343,6 +1345,105 @@ function FortnightlyReport({ logs, inspections, trucks, onClose }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function PumpedStatus({ logs }) {
+  const [openType, setOpenType] = useState(null);
+  const now = Date.now();
+  const dayMs = 86400000;
+
+  const lastServiceByCar = useMemo(() => {
+    const map = {};
+    logs.forEach((l) => {
+      if (!l.car) return;
+      const ts = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
+      if (!map[l.car] || ts > map[l.car]) map[l.car] = ts;
+    });
+    return map;
+  }, [logs]);
+
+  const statusFor = (daysSince) => {
+    if (daysSince === null) return { label: "Never serviced", color: "var(--danger)", bg: "rgba(229,72,77,0.14)" };
+    if (daysSince >= 4) return { label: `${daysSince}d ago`, color: "var(--danger)", bg: "rgba(229,72,77,0.14)" };
+    if (daysSince === 3) return { label: `${daysSince}d ago`, color: "var(--amber-light)", bg: "rgba(245,166,35,0.14)" };
+    return { label: daysSince === 0 ? "Today" : `${daysSince}d ago`, color: "var(--ok)", bg: "rgba(63,185,138,0.14)" };
+  };
+
+  const typeSummaries = useMemo(() => {
+    return TRAIN_TYPES.map((type) => {
+      const cars = [];
+      (DEFAULT_FLEET[type] || []).forEach((vehicleNo) => {
+        getCarOptions(type, vehicleNo).forEach((car) => {
+          const lastTs = lastServiceByCar[car] || null;
+          const daysSince = lastTs === null ? null : Math.floor((now - lastTs) / dayMs);
+          cars.push({ vehicleNo, car, lastTs, daysSince, status: statusFor(daysSince) });
+        });
+      });
+      cars.sort((a, b) => {
+        const av = a.daysSince === null ? 9999 : a.daysSince;
+        const bv = b.daysSince === null ? 9999 : b.daysSince;
+        return bv - av;
+      });
+      const redCount = cars.filter((c) => c.daysSince === null || c.daysSince >= 4).length;
+      const amberCount = cars.filter((c) => c.daysSince === 3).length;
+      const greenCount = cars.length - redCount - amberCount;
+      return { type, cars, redCount, amberCount, greenCount };
+    });
+  }, [lastServiceByCar, now]);
+
+  return (
+    <div>
+      <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>Days Since Pumped</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Every car in the fleet, grouped by type. Logging any service for a car resets its clock to today. 4+ days = red, 3 days = amber, under 3 days = green.</div>
+      </div>
+
+      {typeSummaries.map(({ type, cars, redCount, amberCount, greenCount }) => {
+        const isOpen = openType === type;
+        return (
+          <div key={type} className="rise dash-panel" style={styles.panel}>
+            <button type="button" style={styles.pumpedTypeHeader} onClick={() => setOpenType(isOpen ? null : type)}>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Icon path={ICONS.chevronDown} size={14} color="var(--muted)" style={{ transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+                <span style={{ fontWeight: 700, color: "var(--chalk)", fontSize: 14 }}>{type}</span>
+                <span style={{ fontSize: 11.5, color: "var(--muted)" }}>({cars.length} cars)</span>
+              </span>
+              <span style={{ display: "flex", gap: 8 }}>
+                {redCount > 0 && <span style={{ ...styles.chip, color: "var(--danger)", background: "rgba(229,72,77,0.14)" }}>{redCount} red</span>}
+                {amberCount > 0 && <span style={{ ...styles.chip, color: "var(--amber-light)", background: "rgba(245,166,35,0.14)" }}>{amberCount} amber</span>}
+                <span style={{ ...styles.chip, color: "var(--ok)", background: "rgba(63,185,138,0.14)" }}>{greenCount} green</span>
+              </span>
+            </button>
+
+            {isOpen && (
+              <div style={styles.pumpedTableWrap}>
+                <table style={styles.signupTable}>
+                  <thead>
+                    <tr>
+                      <th style={styles.signupTh}>Vehicle</th>
+                      <th style={styles.signupTh}>Car</th>
+                      <th style={styles.signupTh}>Last serviced</th>
+                      <th style={styles.signupTh}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cars.map((c) => (
+                      <tr key={c.car}>
+                        <td style={styles.signupTd}>{c.vehicleNo}</td>
+                        <td style={styles.signupTd}>{c.car}</td>
+                        <td style={styles.signupTd}>{c.lastTs ? new Date(c.lastTs).toLocaleDateString("en-AU") : "—"}</td>
+                        <td style={styles.signupTd}><span style={{ ...styles.chip, color: c.status.color, background: c.status.bg }}>{c.status.label}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2595,6 +2696,8 @@ const styles = {
   kpiLabel: { fontSize: 10.5, color: "var(--muted)", marginTop: 3, lineHeight: 1.3 },
   kpiDivider: { width: 1, background: "var(--panel-3)", flexShrink: 0 },
   unitStatBox: { textAlign: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 10, padding: "12px 8px" },
+  pumpedTypeHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", flexWrap: "wrap", gap: 10 },
+  pumpedTableWrap: { marginTop: 16, maxHeight: 480, overflowY: "auto" },
   reportPage: { minHeight: "100vh", background: "#e9e9e6" },
   reportToolbar: { position: "sticky", top: 0, zIndex: 10, display: "flex", alignItems: "center", gap: 14, background: "var(--panel-2)", borderBottom: "1px solid var(--panel-3)", padding: "12px 18px" },
   reportSheet: { maxWidth: 800, margin: "24px auto 60px", background: "#fff", color: "#1a1a1a", padding: "40px 44px", boxShadow: "0 10px 40px rgba(0,0,0,.25)", borderRadius: 4 },
