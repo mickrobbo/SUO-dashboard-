@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.6";
+const APP_VERSION = "2026-08-14.7";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -645,6 +645,45 @@ function AdminPanel({ showToast, currentUid }) {
       </div>
 
       <div className="rise dash-panel" style={styles.panel}>
+        <div className="panel-title" style={styles.panelTitle}>All Sign-ups{operators ? ` (${operators.length})` : ""}</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 14 }}>Every account that has ever signed up, regardless of email domain or approval status.</div>
+        {operators === null ? <div style={styles.emptyState}>Loading…</div> : operators.length === 0 ? (
+          <div style={styles.emptyState}>No sign-ups yet.</div>
+        ) : (
+          <div style={styles.signupTableWrap}>
+            <table style={styles.signupTable}>
+              <thead>
+                <tr>
+                  <th style={styles.signupTh}>Name</th>
+                  <th style={styles.signupTh}>Email</th>
+                  <th style={styles.signupTh}>Status</th>
+                  <th style={styles.signupTh}>Admin</th>
+                  <th style={styles.signupTh}>Signed up</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...operators].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((op) => (
+                  <tr key={op.uid}>
+                    <td style={styles.signupTd}>{op.name || "—"}</td>
+                    <td style={styles.signupTd}>{op.email}</td>
+                    <td style={styles.signupTd}>
+                      <span style={{
+                        ...styles.chip,
+                        color: op.status === "approved" ? "var(--ok)" : op.status === "rejected" ? "var(--danger)" : "var(--amber-light)",
+                        background: op.status === "approved" ? "rgba(63,185,138,0.14)" : op.status === "rejected" ? "rgba(229,72,77,0.14)" : "rgba(245,166,35,0.14)",
+                      }}>{op.status || "pending"}</span>
+                    </td>
+                    <td style={styles.signupTd}>{op.isAdmin ? "Yes" : "—"}</td>
+                    <td style={styles.signupTd}>{op.createdAt ? new Date(op.createdAt).toLocaleDateString("en-AU") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="rise dash-panel" style={styles.panel}>
         <div style={styles.panelTitleRow}>
           <div className="panel-title" style={{ ...styles.panelTitle, marginBottom: 0 }}>System Health Check</div>
           <button style={styles.exportBtn} onClick={runHealthCheck} disabled={healthRunning}><Icon path={ICONS.pulse} size={13} style={{ marginRight: 6 }} />{healthRunning ? "Running…" : "Run check"}</button>
@@ -685,6 +724,7 @@ function AdminPanel({ showToast, currentUid }) {
 function App() {
   const updateAvailable = useVersionCheck();
   const [session, setSession] = useState(null);
+  const [forceMobile, setForceMobile] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [profile, setProfile] = useState(null);
   const [tab, setTab] = useState("dashboard");
@@ -906,10 +946,15 @@ function App() {
     const rel = [...logs.filter((l) => l.truck === truck), ...inspections.filter((i) => i.truck === truck)].filter((r) => r.km).sort((a, b) => (a.date < b.date ? 1 : -1));
     return rel[0]?.km || null;
   };
+  // Fleet tab status is about the TRUCK's own inspection outcome — not train/car
+  // faults raised during servicing (those live on the Fleet Repair Snapshot).
+  const latestInspection = (truck) => {
+    const rel = inspections.filter((i) => i.truck === truck).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+    return rel[0] || null;
+  };
   const latestStatus = (truck) => {
-    const rel = [...logs.filter((l) => l.truck === truck), ...inspections.filter((i) => i.truck === truck)]
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
-    return rel[0]?.repairRequired ? "repair" : "ok";
+    const insp = latestInspection(truck);
+    return insp?.repairRequired ? "repair" : "ok";
   };
 
   if (!authChecked) return <div style={styles.app} />;
@@ -951,7 +996,7 @@ function App() {
   const isAdmin = profile.isAdmin === true;
 
   return (
-    <div style={styles.app}>
+    <div className={forceMobile ? "force-mobile" : ""} style={styles.app}>
       {flashEntry && (
         <React.Fragment>
           <div className="flash-overlay" />
@@ -976,6 +1021,7 @@ function App() {
             {syncState === "ok" ? `Live · synced ${secondsAgo}s ago` : syncState === "error" ? "Offline" : "Connecting…"}
           </span>
           <button style={styles.refreshBtn} onClick={() => refresh(true)} title="Refresh now"><Icon path={ICONS.refresh} size={15} color="var(--muted)" /></button>
+          <button style={styles.viewToggleBtn} onClick={() => setForceMobile((f) => !f)} title="Toggle desktop/mobile view">{forceMobile ? "Mobile view" : "Desktop view"}</button>
           <button style={styles.refreshBtn} onClick={handleSignOut} title="Sign out"><Icon path={ICONS.logout} size={15} color="var(--muted)" /></button>
         </div>
       </header>
@@ -994,7 +1040,7 @@ function App() {
 
       <main className="app-wrap" style={styles.main}>
         {tab === "dashboard" && <Dashboard trucks={trucks} fleet={fleet} logs={logs} inspections={inspections} onAddFault={addLog} showToast={showToast} />}
-        {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} logs={logs} inspections={inspections} />}
+        {tab === "status" && <FleetStatus trucks={trucks} latestKm={latestKm} latestStatus={latestStatus} latestInspection={latestInspection} logs={logs} inspections={inspections} />}
         {tab === "log" && <ServiceForm trucks={trucks} fleet={fleet} editingEntry={editingLog} onSubmit={editingLog ? updateLog : addLog} onCancelEdit={() => setEditingLog(null)} />}
         {tab === "admin" && isAdmin && <AdminPanel showToast={showToast} currentUid={session.uid} />}
         {tab === "history" && <History logs={logs} inspections={inspections} onDeleteLog={deleteLog} onDeleteInspection={deleteInspection} onEditLog={startEditLog} onExport={exportExcel} onClearAll={clearAllData} trucks={trucks} />}
@@ -1011,7 +1057,7 @@ function App() {
   );
 }
 
-function FleetStatus({ trucks, latestKm, latestStatus, logs, inspections }) {
+function FleetStatus({ trucks, latestKm, latestStatus, latestInspection, logs, inspections }) {
   const recentActivity = [...logs, ...inspections].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 8);
   return (
     <div>
@@ -1019,15 +1065,30 @@ function FleetStatus({ trucks, latestKm, latestStatus, logs, inspections }) {
         {trucks.map((truck, idx) => {
           const status = latestStatus(truck);
           const km = latestKm(truck);
+          const insp = latestInspection(truck);
+          const isRepair = status === "repair";
           return (
-            <div key={truck} className="rise" style={{ ...styles.truckCard, animationDelay: `${idx * 0.05}s` }}>
+            <div key={truck} className="rise" style={{ ...styles.trackCard, animationDelay: `${idx * 0.05}s`, ...(isRepair ? styles.trackCardAlert : {}) }}>
               <div style={styles.truckCardTop}>
                 <span style={styles.truckName}>{truck}</span>
-                <span style={{ ...styles.statusPill, ...(status === "repair" ? styles.statusPillRepair : styles.statusPillOk) }}>
-                  <Icon path={status === "repair" ? ICONS.alert : ICONS.check} size={12} />{status === "repair" ? "Repair needed" : "Operational"}
+                <span style={{ ...styles.statusPill, ...(isRepair ? styles.statusPillRepair : styles.statusPillOk) }}>
+                  <Icon path={isRepair ? ICONS.alert : ICONS.check} size={12} />{isRepair ? "Fault on last inspection" : "Operational"}
                 </span>
               </div>
               <div style={styles.kmRow}><span style={styles.kmValue}>{km ? km.toLocaleString() : "—"}</span><span style={styles.kmUnit}>km</span></div>
+
+              <div style={styles.trackRail}>
+                <div style={styles.trackRailLine} />
+                <div style={{ ...styles.trackMarker, left: isRepair ? "82%" : "14%", background: isRepair ? "var(--danger)" : "var(--ok)", boxShadow: `0 0 12px ${isRepair ? "var(--danger)" : "var(--ok)"}` }} className="live-dot" />
+              </div>
+
+              <div style={styles.trackMeta}>
+                {insp ? (
+                  <React.Fragment>Last inspection {fmtDate(insp.date)} · {insp.operator || "unassigned"}{isRepair && insp.faultText ? ` — ${insp.faultText}` : ""}</React.Fragment>
+                ) : (
+                  "No inspection recorded yet"
+                )}
+              </div>
             </div>
           );
         })}
@@ -1036,15 +1097,20 @@ function FleetStatus({ trucks, latestKm, latestStatus, logs, inspections }) {
       <div style={styles.sectionLabel}>Recent activity</div>
       {recentActivity.length === 0 && <div style={styles.emptyState}>No entries yet.</div>}
       <div style={styles.timeline}>
-        {recentActivity.map((r) => (
-          <div key={r.id} style={styles.timelineRow}>
-            <Icon path={ICONS.circle} size={7} color={r.repairRequired ? "var(--danger)" : "var(--ok)"} style={{ marginTop: 5, flexShrink: 0 }} />
-            <div style={{ flex: 1 }}>
-              <div style={styles.timelineTitle}>{r.truck} · {r.fleetNo ? `${r.trainType} ${r.fleetNo}${r.car ? " / car " + r.car : ""}` : "Daily inspection"}</div>
-              <div style={styles.timelineMeta}>{fmtDate(r.date)} — {r.operator || "unassigned"}{r.serviceType ? ` — ${r.serviceType}` : ""}</div>
+        {recentActivity.map((r) => {
+          const isInspection = !!r.checklist;
+          const flagged = isInspection && r.repairRequired;
+          const dotColor = flagged ? "var(--danger)" : isInspection ? "var(--ok)" : "var(--amber)";
+          return (
+            <div key={r.id} style={styles.timelineRow}>
+              <Icon path={ICONS.circle} size={7} color={dotColor} style={{ marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={styles.timelineTitle}>{r.truck} · {r.fleetNo ? `${r.trainType} ${r.fleetNo}${r.car ? " / car " + r.car : ""}` : "Daily inspection"}</div>
+                <div style={styles.timelineMeta}>{fmtDate(r.date)} — {r.operator || "unassigned"}{r.serviceType ? ` — ${r.serviceType}` : ""}</div>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1072,14 +1138,28 @@ function useCountUp(value, duration = 600) {
 }
 
 function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) {
-  const totalServices = logs.length;
-  const totalInspections = inspections.length;
+  const [period, setPeriod] = useState("all"); // "7d" | "30d" | "all"
+  const periodLogs = useMemo(() => {
+    if (period === "all") return logs;
+    const days = period === "7d" ? 7 : 30;
+    const cutoff = Date.now() - days * 86400000;
+    return logs.filter((l) => (l.submittedAt || 0) >= cutoff);
+  }, [logs, period]);
+  const periodInspections = useMemo(() => {
+    if (period === "all") return inspections;
+    const days = period === "7d" ? 7 : 30;
+    const cutoff = Date.now() - days * 86400000;
+    return inspections.filter((i) => (i.submittedAt || 0) >= cutoff);
+  }, [inspections, period]);
+
+  const totalServices = periodLogs.length;
+  const totalInspections = periodInspections.length;
   const openRepairs = logs.filter((l) => l.repairRequired).length + inspections.filter((i) => i.repairRequired).length;
   const totalServicesDisplay = useCountUp(totalServices);
   const totalInspectionsDisplay = useCountUp(totalInspections);
   const openRepairsDisplay = useCountUp(openRepairs);
-  const planned = logs.filter((l) => l.serviceType === "Planned").length;
-  const adhoc = logs.filter((l) => l.serviceType === "Ad-hoc").length;
+  const planned = periodLogs.filter((l) => l.serviceType === "Planned").length;
+  const adhoc = periodLogs.filter((l) => l.serviceType === "Ad-hoc").length;
 
   const [snapshotFilters, setSnapshotFilters] = useState({ openOnly: false, range: "all", truck: "all", fault: "all" });
   const [expandedFault, setExpandedFault] = useState(null);
@@ -1090,23 +1170,23 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) 
 
   const amPm = useMemo(() => {
     let am = 0, pm = 0;
-    logs.forEach((l) => {
+    periodLogs.forEach((l) => {
       if (!l.time) return;
       const hour = parseInt(l.time.split(":")[0], 10);
       if (Number.isNaN(hour)) return;
       if (hour < 12) am++; else pm++;
     });
     return { am, pm };
-  }, [logs]);
+  }, [periodLogs]);
 
   const operatorTally = useMemo(() => {
     const counts = {};
-    logs.forEach((l) => { const name = l.operator || "Unassigned"; counts[name] = (counts[name] || 0) + 1; });
+    periodLogs.forEach((l) => { const name = l.operator || "Unassigned"; counts[name] = (counts[name] || 0) + 1; });
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
       .map(([name, value]) => ({ label: name.split(" ")[0].slice(0, 10), value }));
-  }, [logs]);
+  }, [periodLogs]);
 
   const allOpenFaults = useMemo(() => {
     const byFleet = {};
@@ -1164,18 +1244,15 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) 
 
   const flagCounts = useMemo(() => {
     const counts = Object.fromEntries(FAULT_FLAGS.map((f) => [f, 0]));
-    logs.forEach((l) => (l.faultFlags || []).forEach((f) => { if (counts[f] !== undefined) counts[f]++; }));
+    periodLogs.forEach((l) => (l.faultFlags || []).forEach((f) => { if (counts[f] !== undefined) counts[f]++; }));
     return FAULT_FLAGS.map((f) => ({ label: f.split(" ").slice(0, 2).join(" "), value: counts[f] }));
-  }, [logs]);
+  }, [periodLogs]);
 
-  const kmSeries = useMemo(() => {
-    const colors = ["var(--amber)", "var(--ok)"];
-    return trucks.map((truck, i) => {
-      const points = [...logs.filter((l) => l.truck === truck && l.km), ...inspections.filter((x) => x.truck === truck && x.km)]
-        .sort((a, b) => (a.date > b.date ? 1 : -1)).map((r) => ({ y: r.km, label: r.date }));
-      return { label: truck, color: colors[i % colors.length], points };
-    });
-  }, [trucks, logs, inspections]);
+  const topFaultCodes = useMemo(() => {
+    const counts = Object.fromEntries(TOILET_FAULT_CODES.map((c) => [c.code, 0]));
+    periodLogs.forEach((l) => { if (l.faultCode && counts[l.faultCode] !== undefined) counts[l.faultCode]++; });
+    return TOILET_FAULT_CODES.map((c) => ({ label: `CODE ${c.code}`, value: counts[c.code] }));
+  }, [periodLogs]);
 
   return (
     <div>
@@ -1203,10 +1280,19 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) 
         ))}
       </div>
 
+      <div style={styles.periodRow}>
+        <span style={styles.periodLabel}>Showing</span>
+        <div style={styles.segmented}>
+          {[{ id: "7d", label: "7 days" }, { id: "30d", label: "30 days" }, { id: "all", label: "All time" }].map((p) => (
+            <button key={p.id} type="button" onClick={() => setPeriod(p.id)} style={{ ...styles.segmentedBtnSm, ...(period === p.id ? styles.segmentedBtnActive : {}) }}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+
       <div style={styles.statRow}>
         <div className="rise stat-card" style={styles.statCard}><div className="stat-value" style={styles.statValue}>{totalServicesDisplay}</div><div style={styles.statLabel}>Services logged</div></div>
         <div className="rise stat-card" style={{ ...styles.statCard, animationDelay: ".05s" }}><div className="stat-value" style={styles.statValue}>{totalInspectionsDisplay}</div><div style={styles.statLabel}>Inspections</div></div>
-        <div className="rise stat-card" style={{ ...styles.statCard, animationDelay: ".1s" }}><div className="stat-value" style={{ ...styles.statValue, color: openRepairs ? "var(--danger)" : "var(--ok)" }}>{openRepairsDisplay}</div><div style={styles.statLabel}>Repairs logged</div></div>
+        <div className="rise stat-card" style={{ ...styles.statCard, animationDelay: ".1s" }}><div className="stat-value" style={{ ...styles.statValue, color: openRepairs ? "var(--danger)" : "var(--ok)" }}>{openRepairsDisplay}</div><div style={styles.statLabel}>Repairs logged (all time)</div></div>
       </div>
 
       <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".08s", ...(trainRepairSnapshot.length ? styles.panelAlert : {}) }}>
@@ -1326,8 +1412,8 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, showToast }) 
 
       <div className="desktop-2col">
         <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".12s" }}>
-          <div className="panel-title" style={styles.panelTitle}>KM Trend</div>
-          <LineChart series={kmSeries} />
+          <div className="panel-title" style={styles.panelTitle}>Top Fault Codes</div>
+          <BarChart data={topFaultCodes} color="var(--danger)" />
         </div>
         <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".16s" }}>
           <div className="panel-title" style={styles.panelTitle}>Fault Types Reported</div>
@@ -1613,7 +1699,7 @@ function History({ logs, inspections, onDeleteLog, onDeleteInspection, onEditLog
 
 const styles = {
   app: { minHeight: "100vh", background: "transparent", color: "var(--chalk)", paddingBottom: 40 },
-  header: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "18px 18px 14px", borderBottom: "1px solid var(--line)", maxWidth: 1360, margin: "0 auto" },
+  header: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "16px 18px 12px", borderBottom: "1px solid var(--line)", maxWidth: 1180, margin: "0 auto" },
   headerLeft: { display: "flex", alignItems: "center", gap: 12 },
   logoMark: { width: 36, height: 36, borderRadius: 9, background: "linear-gradient(155deg, var(--amber-light), var(--amber))", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 4px 14px rgba(245,166,35,.25)" },
   title: { fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: "0.08em", color: "var(--amber)", fontWeight: 700, textShadow: "0 0 16px rgba(245,166,35,.3)" },
@@ -1621,6 +1707,7 @@ const styles = {
   syncBadge: { display: "flex", alignItems: "center", fontSize: 10.5, fontWeight: 700, color: "var(--ok)", background: "rgba(63,185,138,0.12)", padding: "5px 10px", borderRadius: 20, textTransform: "uppercase", letterSpacing: "0.03em", whiteSpace: "nowrap" },
   syncBadgeError: { color: "var(--danger)", background: "rgba(229,72,77,0.12)" },
   refreshBtn: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: 8, display: "flex" },
+  viewToggleBtn: { background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: "8px 12px", color: "var(--muted)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" },
   reportFaultBtn: { display: "flex", alignItems: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 8, padding: "6px 11px", color: "var(--amber-light)", fontSize: 11.5, fontWeight: 700, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, background: "rgba(10,13,12,0.75)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 70, padding: "0 0 0 0" },
   modalCard: { width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", background: "var(--panel-2)", border: "1px solid var(--panel-3)", borderRadius: "18px 18px 0 0", padding: 22 },
@@ -1643,12 +1730,22 @@ const styles = {
   healthRow: { display: "flex", alignItems: "center", background: "var(--panel)", border: "1px solid var(--panel-3)", borderRadius: 9, padding: "9px 12px", fontSize: 12.5, color: "var(--chalk)" },
   approveBtn: { flex: 1, background: "rgba(63,185,138,0.14)", border: "1px solid rgba(63,185,138,0.3)", borderRadius: 8, padding: "8px 10px", color: "var(--ok)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
   rejectBtn: { flex: 1, background: "rgba(229,72,77,0.1)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 8, padding: "8px 10px", color: "var(--danger)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
-  tabBar: { display: "flex", gap: 6, padding: "12px 14px 0", overflowX: "auto", maxWidth: 1360, margin: "0 auto" },
+  signupTableWrap: { overflowX: "auto" },
+  signupTable: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 },
+  signupTh: { textAlign: "left", padding: "8px 10px", color: "var(--muted)", fontWeight: 700, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.03em", borderBottom: "1px solid var(--panel-3)", whiteSpace: "nowrap" },
+  signupTd: { padding: "9px 10px", color: "var(--chalk)", borderBottom: "1px solid var(--panel-3)", whiteSpace: "nowrap" },
+  tabBar: { display: "flex", gap: 6, padding: "10px 14px 0", overflowX: "auto", maxWidth: 1180, margin: "0 auto" },
   tabBtn: { display: "flex", alignItems: "center", background: "none", border: "none", color: "var(--muted)", fontSize: 13, fontWeight: 600, padding: "9px 14px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap" },
   tabBtnActive: { background: "var(--panel-2)", color: "var(--amber)" },
-  main: { padding: "18px 16px 0", maxWidth: 1360, margin: "0 auto" },
+  main: { padding: "16px 16px 0", maxWidth: 1180, margin: "0 auto" },
   gridTwo: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
   truckCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 14, padding: 14, boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
+  trackCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 14, padding: 16, boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
+  trackCardAlert: { border: "1px solid rgba(229,72,77,0.4)" },
+  trackRail: { position: "relative", height: 4, background: "var(--panel-3)", borderRadius: 4, margin: "16px 2px 10px" },
+  trackRailLine: { position: "absolute", inset: 0, borderRadius: 4, backgroundImage: "repeating-linear-gradient(90deg, var(--muted) 0, var(--muted) 4px, transparent 4px, transparent 10px)", opacity: 0.35 },
+  trackMarker: { position: "absolute", top: "50%", width: 12, height: 12, borderRadius: "50%", transform: "translate(-50%, -50%)" },
+  trackMeta: { fontSize: 11.5, color: "var(--muted)", lineHeight: 1.4 },
   truckCardTop: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, marginBottom: 10 },
   truckName: { fontSize: 14, fontWeight: 700, color: "var(--chalk)" },
   statusPill: { display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, padding: "3px 8px", borderRadius: 20, textTransform: "uppercase", letterSpacing: "0.03em" },
@@ -1711,11 +1808,13 @@ const styles = {
   toast: { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "linear-gradient(155deg, var(--amber-light), var(--amber))", color: "#0E1A16", padding: "10px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700, boxShadow: "0 10px 28px rgba(0,0,0,.4)" },
   updateBanner: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", gap: 14, background: "var(--panel-2)", borderTop: "1px solid var(--amber-dim)", padding: "12px 16px", fontSize: 12.5, color: "var(--chalk)", fontWeight: 600 },
   updateReloadBtn: { background: "var(--amber)", border: "none", borderRadius: 8, padding: "6px 14px", color: "#0E1A16", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  periodRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 },
+  periodLabel: { fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em" },
   statRow: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 },
-  statCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 16, padding: "22px 16px", textAlign: "center", boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
-  statValue: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 32, fontWeight: 700, color: "var(--chalk)" },
+  statCard: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 14, padding: "16px 14px", textAlign: "center", boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
+  statValue: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 26, fontWeight: 700, color: "var(--chalk)" },
   statLabel: { fontSize: 11.5, color: "var(--muted)", marginTop: 6, textTransform: "uppercase", letterSpacing: "0.03em" },
-  panel: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 16, padding: 22, marginBottom: 20, boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
+  panel: { background: "linear-gradient(165deg, var(--panel-2), var(--panel))", border: "1px solid var(--panel-3)", borderRadius: 14, padding: 16, marginBottom: 14, boxShadow: "0 10px 24px rgba(0,0,0,.25)" },
   panelAlert: { border: "1px solid rgba(229,72,77,0.4)", boxShadow: "0 10px 24px rgba(0,0,0,.25), 0 0 0 1px rgba(229,72,77,0.15)" },
   allClear: { display: "flex", alignItems: "center", fontSize: 13.5, color: "var(--ok)", fontWeight: 600, padding: "6px 2px" },
   snapshotCard: { background: "var(--panel)", border: "1px solid rgba(229,72,77,0.3)", borderRadius: 10, padding: "12px 14px" },
@@ -1758,24 +1857,18 @@ const styles = {
 
 const responsiveCss = `
   @media (min-width: 820px) {
-    .desktop-2col { display: grid !important; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .desktop-2col { display: grid !important; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .dash-panel { padding: 18px !important; }
   }
-  @media (min-width: 1440px) {
-    .app-wrap { max-width: 1600px !important; }
-    body { font-size: 15.5px; }
-    .stat-card { padding: 30px 20px !important; }
-    .stat-value { font-size: 42px !important; }
-    .dash-panel { padding: 30px !important; margin-bottom: 24px !important; }
-    .panel-title { font-size: 14.5px !important; margin-bottom: 18px !important; }
+  @media (min-width: 1024px) {
+    .app-wrap { max-width: 1180px !important; }
+    .stat-card { padding: 18px !important; }
+    .stat-value { font-size: 30px !important; }
   }
-  @media (min-width: 1900px) {
-    .app-wrap { max-width: 1900px !important; }
-    body { font-size: 16.5px; }
-    .stat-card { padding: 36px 22px !important; }
-    .stat-value { font-size: 48px !important; }
-    .dash-panel { padding: 36px !important; }
-    .panel-title { font-size: 16px !important; margin-bottom: 20px !important; }
-  }
+  .force-mobile .app-wrap { max-width: 420px !important; }
+  .force-mobile .desktop-2col { display: flex !important; flex-direction: column !important; gap: 14px !important; }
+  .force-mobile .stat-value { font-size: 22px !important; }
+  .force-mobile .dash-panel { padding: 16px !important; }
 `;
 const styleTag = document.createElement("style");
 styleTag.textContent = responsiveCss;
