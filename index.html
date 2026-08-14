@@ -80,7 +80,7 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 /* Bump this (and the matching version.json) on every deploy so open tabs get
    prompted to reload instead of running stale code silently. */
-const APP_VERSION = "2026-08-14.10";
+const APP_VERSION = "2026-08-14.12";
 function useVersionCheck() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
@@ -585,10 +585,12 @@ function AdminPanel({ showToast, currentUid }) {
   }, []);
 
   const setOperatorStatus = async (op, status) => {
+    if (op.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) { showToast("The primary admin account can't be revoked"); return; }
     try { await fbSet("operators", op.uid, { ...op, status }); showToast(status === "approved" ? `${op.name} approved` : `${op.name} rejected`); loadOperators(); }
     catch (e) { showToast("Update failed — check connection"); }
   };
   const setOperatorAdmin = async (op, isAdmin) => {
+    if (!isAdmin && op.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) { showToast("The primary admin account can't have its admin rights removed"); return; }
     try { await fbSet("operators", op.uid, { ...op, isAdmin }); showToast(isAdmin ? `${op.name} is now an admin` : `${op.name}'s admin rights removed`); loadOperators(); }
     catch (e) { showToast("Update failed — check connection"); }
   };
@@ -650,22 +652,26 @@ function AdminPanel({ showToast, currentUid }) {
           <div style={styles.emptyState}>No approved operators yet.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {approved.map((op) => (
+            {approved.map((op) => {
+              const isProtected = op.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+              return (
               <div key={op.uid} style={{ ...styles.snapshotCard, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <span>
                   <Icon path={ICONS.user} size={13} style={{ marginRight: 8 }} />{op.name} <span style={{ color: "var(--muted)", fontSize: 11.5 }}>({op.email})</span>
                   {op.isAdmin && <span style={{ ...styles.chip, marginLeft: 8 }}>Admin</span>}
+                  {isProtected && <span style={{ ...styles.chip, marginLeft: 6, color: "var(--amber-light)", background: "rgba(245,166,35,0.14)" }}>Protected</span>}
                 </span>
                 <div style={{ display: "flex", gap: 8 }}>
-                  {op.uid !== currentUid && (
+                  {!isProtected && op.uid !== currentUid && (
                     op.isAdmin
                       ? <button style={styles.rejectBtn} onClick={() => setOperatorAdmin(op, false)}>Remove admin</button>
                       : <button style={styles.approveBtn} onClick={() => setOperatorAdmin(op, true)}>Make admin</button>
                   )}
-                  <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Revoke</button>
+                  {!isProtected && <button style={styles.rejectBtn} onClick={() => setOperatorStatus(op, "rejected")}>Revoke</button>}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -697,7 +703,9 @@ function AdminPanel({ showToast, currentUid }) {
                 </tr>
               </thead>
               <tbody>
-                {[...operators].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((op) => (
+                {[...operators].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((op) => {
+                  const isProtected = op.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+                  return (
                   <tr key={op.uid}>
                     <td style={styles.signupTd}>
                       {onlineUids !== null && onlineUids.has(op.uid) && <Icon path={ICONS.circle} size={8} color="var(--ok)" style={{ marginRight: 6 }} className="live-dot" />}
@@ -711,17 +719,18 @@ function AdminPanel({ showToast, currentUid }) {
                         background: op.status === "approved" ? "rgba(63,185,138,0.14)" : op.status === "rejected" ? "rgba(229,72,77,0.14)" : "rgba(245,166,35,0.14)",
                       }}>{op.status || "pending"}</span>
                     </td>
-                    <td style={styles.signupTd}>{op.isAdmin ? "Yes" : "—"}</td>
+                    <td style={styles.signupTd}>{op.isAdmin ? "Yes" : "—"}{isProtected ? " 🔒" : ""}</td>
                     <td style={styles.signupTd}>{op.createdAt ? new Date(op.createdAt).toLocaleDateString("en-AU") : "—"}</td>
                     <td style={styles.signupTd}>
-                      {op.status === "approved" && op.uid !== currentUid && (
+                      {!isProtected && op.status === "approved" && op.uid !== currentUid && (
                         op.isAdmin
                           ? <button style={styles.signupAdminBtnOff} onClick={() => setOperatorAdmin(op, false)}>Remove admin</button>
                           : <button style={styles.signupAdminBtnOn} onClick={() => setOperatorAdmin(op, true)}>Make admin</button>
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1337,6 +1346,18 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
       .sort((a, b) => b.entries.length - a.entries.length);
   }, [logs]);
 
+  const resolvedFaults = useMemo(() => {
+    return logs
+      .filter((l) => l.resolved)
+      .map((l) => {
+        const reportedAt = l.submittedAt || new Date(l.date + "T00:00:00").getTime();
+        const resolvedAt = l.resolvedAt || reportedAt;
+        const hoursOpen = Math.max(0, Math.round((resolvedAt - reportedAt) / 3600000));
+        return { ...l, hoursOpen };
+      })
+      .sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0));
+  }, [logs]);
+
   const recentServices = useMemo(() => {
     return [...logs].sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)).slice(0, 8);
   }, [logs]);
@@ -1509,6 +1530,29 @@ function Dashboard({ trucks, fleet, logs, inspections, onAddFault, onResolveFaul
           </div>
         </div>
       )}
+
+      <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".11s" }}>
+        <div className="panel-title" style={styles.panelTitle}>Resolved Faults{resolvedFaults.length > 0 ? ` (${resolvedFaults.length})` : ""}</div>
+        {resolvedFaults.length === 0 ? (
+          <div style={styles.emptyState}>Nothing marked resolved yet.</div>
+        ) : (
+          <div className={resolvedFaults.length > 3 ? "scroll-cap" : ""} style={{ display: "flex", flexDirection: "column", gap: 10, ...(resolvedFaults.length > 3 ? styles.scrollCap : {}) }}>
+            {resolvedFaults.map((entry) => (
+              <div key={entry.id} className="snapshot-card" style={{ ...styles.snapshotCard, border: "1px solid rgba(63,185,138,0.3)" }}>
+                <div style={styles.snapshotTop}>
+                  <span style={styles.snapshotTruck}><TrainBadge type={entry.trainType} />&nbsp;{entry.fleetNo}{entry.car ? ` / car ${entry.car}` : ""}</span>
+                </div>
+                <div style={styles.snapshotSubRow}>
+                  <span style={styles.snapshotDate}>Resolved {entry.resolvedAt ? new Date(entry.resolvedAt).toLocaleDateString("en-AU") : "—"}{entry.resolvedBy ? ` by ${entry.resolvedBy}` : ""}</span>
+                  <span style={{ ...styles.ageBadge, color: "var(--ok)", background: "rgba(63,185,138,0.14)" }}>{entry.hoursOpen < 24 ? `${entry.hoursOpen}h to fix` : `${Math.round(entry.hoursOpen / 24)}d to fix`}</span>
+                </div>
+                <div style={{ fontSize: 13, color: "var(--chalk)", fontWeight: 600, marginTop: 8 }}>{faultSummary(entry)}</div>
+                {entry.resolutionNotes && <div style={styles.snapshotMeta}>{entry.resolutionNotes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="desktop-2col">
         <div className="rise dash-panel" style={{ ...styles.panel, animationDelay: ".12s" }}>
@@ -1770,7 +1814,13 @@ function History({ logs, inspections, onDeleteLog, onDeleteInspection, onEditLog
               {isAdmin && <div style={styles.cardActions}><button style={styles.cardActionBtn} onClick={() => onEditLog(l)}><Icon path={ICONS.edit} size={14} color="#9FB0AA" /></button><button style={styles.cardActionBtn} onClick={() => onDeleteLog(l.id)}><Icon path={ICONS.trash} size={14} color="#9FB0AA" /></button></div>}
               <div style={styles.listCardTitle}>{l.truck} — {l.trainType} {l.fleetNo} {l.car && `/ ${l.car}`}</div>
               <div style={styles.listCardMeta}>{fmtDate(l.date)} {l.time} · {l.operator} · {l.serviceType}</div>
-              {l.repairRequired && (<div style={styles.repairFlag}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5 }} />{faultSummary(l)}{l.photo && " · photo attached"}{(l.pumpedLocked || l.deferred72h) && (<span style={styles.chipRow}>{l.pumpedLocked && <span style={styles.chip}>Pumped & locked</span>}{l.deferred72h && <span style={styles.chip}>72hr deferment</span>}</span>)}</div>)}
+              {l.repairRequired && (
+                l.resolved ? (
+                  <div style={{ ...styles.repairFlag, color: "var(--ok)" }}><Icon path={ICONS.check} size={12} style={{ marginRight: 5 }} />Resolved{l.resolvedBy ? ` by ${l.resolvedBy}` : ""}{l.resolvedAt ? ` · ${new Date(l.resolvedAt).toLocaleDateString("en-AU")}` : ""}</div>
+                ) : (
+                  <div style={styles.repairFlag}><Icon path={ICONS.alert} size={12} style={{ marginRight: 5 }} />{faultSummary(l)}{l.photo && " · photo attached"}{(l.pumpedLocked || l.deferred72h) && (<span style={styles.chipRow}>{l.pumpedLocked && <span style={styles.chip}>Pumped & locked</span>}{l.deferred72h && <span style={styles.chip}>72hr deferment</span>}</span>)}</div>
+                )
+              )}
             </div>
           ))}
         </div>
